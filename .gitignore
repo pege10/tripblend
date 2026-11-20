@@ -1,0 +1,10 @@
+# A helyi OpenTripPlanner nagy adatfájljai (jar, gráf, OSM, GTFS): nem kellenek a gitbe
+GTFS/
+otp/*.jar
+otp/data/graph.obj
+otp/data/*.osm.pbf
+otp/data/*.zip
+.DS_Store
+
+# Helyi jegyzetek (nem publikus)
+*.local.md

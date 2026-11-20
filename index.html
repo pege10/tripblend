@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="TripBlend: P+R útvonaltervező és elérhetőségi térkép. Autó, bicikli vagy MOL Bubi az út elején vagy végén, közte vonat, HÉV, busz, villamos, metró. Menetrend: Transitous." />
+  <meta property="og:title" content="TripBlend — Park &amp; Ride Planner" />
+  <title>TripBlend — Park &amp; Ride Planner</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=60" />
+</head>
+<body>
+
+  <main id="map"></main>
+
+  <aside id="sidebar">
+    <div class="view-toggle" role="tablist" aria-label="Nézet">
+      <button type="button" class="view-tab active" data-view="route" role="tab" aria-selected="true">
+        <span class="mi">route</span> Útvonal
+      </button>
+      <button type="button" class="view-tab" data-view="iso" role="tab" aria-selected="false">
+        <span class="mi">radar</span> Elérhetőség
+      </button>
+    </div>
+
+    <div class="form-group iso-only">
+      <div class="radio-group iso-direction" role="radiogroup" aria-label="Irány">
+        <label class="radio-label">
+          <input type="radio" name="iso-direction" value="depart" checked />
+          <span>Innen indulok</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="iso-direction" value="arrive" />
+          <span>Ide érkezem</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group od-route-group">
+      <div class="od-route-row">
+        <div class="od-route-fields">
+          <label for="origin" id="origin-label">Indulás</label>
+          <div class="input-row">
+            <input type="text" id="origin" placeholder="pl. Szentendre, Fő tér" value="Budakeszi" />
+            <button type="button" class="pick-btn" id="pick-origin" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
+          </div>
+          <label for="destination" class="route-only">Érkezés</label>
+          <div class="input-row route-only">
+            <input type="text" id="destination" placeholder="pl. Budapest, Deák tér" value="Budapest, Deák tér" />
+            <button type="button" class="pick-btn" id="pick-dest" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
+          </div>
+        </div>
+        <button type="button" class="swap-od-btn swap-od-btn--side route-only" id="swap-od-btn" title="Indulás és érkezés felcserélése">
+          <span class="mi">swap_vert</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Időpont</label>
+      <select id="time-mode" class="glass-select">
+        <option value="now">Indulás most</option>
+        <option value="depart">Indulás időpontja</option>
+        <option value="arrive">Érkezés időpontja</option>
+        <option value="last">Utolsó tömegközlekedési járat</option>
+      </select>
+      <div id="time-inputs" class="time-inputs hidden">
+        <input type="text" id="date-pick" placeholder="Dátum" readonly />
+        <input type="time" id="time-pick" />
+      </div>
+    </div>
+
+    <div class="form-group iso-only">
+      <label for="iso-minutes">Max. utazási idő</label>
+      <div class="slider-wrap">
+        <input type="range" id="iso-minutes" min="10" max="120" step="5" value="45" />
+        <div class="slider-bubble" id="slider-bubble-iso">45 perc</div>
+      </div>
+      <div class="range-labels">
+        <span>10 perc</span>
+        <span>120 perc</span>
+      </div>
+    </div>
+
+    <div class="form-group transport-modes-group">
+      <label>Közlekedési módok</label>
+      <div class="segment-block segment-motor-stack">
+        <div class="motor-segment-parens" title="Bicikli rész (opcionális)">
+          <span class="bicikli-paren" aria-hidden="true">(</span>
+          <div class="motor-segment">
+        <label class="mode-chip segment-motor-chip segment-motor-bike" title="Bicikli a szakasz elején / végén">
+          <input type="checkbox" id="use-bike" class="segment-motor-input" />
+          <span class="mi">pedal_bike</span>
+          Bicikli használat
+        </label>
+        <div id="bike-expand-wrap" class="motor-expand" aria-hidden="true">
+          <div id="bike-options" class="motor-subpanel">
+          <span class="subpanel-label">Hol biciklizel?</span>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="bike-motor-pos" value="first" />
+              <span>Indulásnál</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="bike-motor-pos" value="last" />
+              <span>Érkezésnél</span>
+            </label>
+          </div>
+          <div id="max-bike-group" class="form-group hidden nested-slider">
+            <label for="max-bike-km">Max. biciklizés</label>
+            <div class="slider-wrap">
+              <input type="range" id="max-bike-km" min="1" max="50" step="1" value="15" />
+              <div class="slider-bubble" id="slider-bubble-bike">15 km</div>
+            </div>
+            <div class="range-labels">
+              <span>1 km</span>
+              <span>50 km</span>
+            </div>
+          </div>
+          <div class="form-group transfer-point route-only">
+            <label for="bike-point">Saját átszállási pont <span class="opt">(nem kötelező)</span></label>
+            <div class="input-row">
+              <input type="text" id="bike-point" list="saved-points" placeholder="Hol szállsz át a bicikliről?" autocomplete="off" />
+              <button type="button" class="pick-btn" id="pick-bike-point" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+          <span class="bicikli-paren" aria-hidden="true">)</span>
+        </div>
+
+        <div class="motor-segment">
+        <label class="mode-chip segment-motor-chip segment-motor-car" title="Autó a szakasz elején / végén">
+          <input type="checkbox" id="use-car" class="segment-motor-input" />
+          <span class="mi">directions_car</span>
+          Autóhasználat
+        </label>
+        <div id="car-expand-wrap" class="motor-expand" aria-hidden="true">
+          <div id="car-options" class="motor-subpanel">
+          <span class="subpanel-label">Hol autózol?</span>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="car-motor-pos" value="first" />
+              <span>Indulásnál</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="car-motor-pos" value="last" />
+              <span>Érkezésnél</span>
+            </label>
+          </div>
+          <div id="max-car-group" class="form-group hidden nested-slider">
+            <label for="max-car-minutes">Max. autózás</label>
+            <div class="slider-wrap">
+              <input type="range" id="max-car-minutes" min="1" max="120" step="1" value="30" />
+              <div class="slider-bubble" id="slider-bubble">30 perc</div>
+            </div>
+            <div class="range-labels">
+              <span>1 perc</span>
+              <span>120 perc</span>
+            </div>
+          </div>
+          <div class="form-group transfer-point route-only">
+            <label for="car-point">Saját P+R pont <span class="opt">(nem kötelező)</span></label>
+            <div class="input-row">
+              <input type="text" id="car-point" list="saved-points" placeholder="pl. Bicske, vasútállomás" autocomplete="off" />
+              <button type="button" class="pick-btn" id="pick-car-point" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
+            </div>
+          </div>
+        </div>
+        </div>
+        </div>
+      </div>
+      <div class="mode-chips">
+        <button type="button" class="mode-chip active" data-mode="BUS" title="Helyközi és helyi busz"><span class="mi">directions_bus</span> Busz</button>
+        <button type="button" class="mode-chip active" data-mode="RAIL" title="Vonat (MÁV, Volán)"><span class="mi">train</span> Vonat</button>
+        <button type="button" class="mode-chip active" data-mode="HEV" title="HÉV (elővárosi vasút)"><span class="mi">directions_railway</span> HÉV</button>
+        <button type="button" class="mode-chip active" data-mode="TRAM" title="Villamos"><span class="mi">tram</span> Villamos</button>
+        <button type="button" class="mode-chip active" data-mode="SUBWAY" title="Metró"><span class="mi">subway</span> Metró</button>
+        <button type="button" class="mode-chip" data-mode="RENTAL" title="Bérbicikli (MOL Bubi) az út elején, végén vagy végig"><span class="mi">pedal_bike</span> MOL Bubi</button>
+      </div>
+    </div>
+
+    <button id="plan-btn">Útvonaltervezés</button>
+
+    <div id="results" class="results hidden"></div>
+
+    <div id="error" class="error hidden"></div>
+
+    <datalist id="saved-points"></datalist>
+
+    <p class="data-credit">
+      Útvonaltervezés: <a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>
+      (menetrend- és bérbicikli-adatok forrásai) | Térkép és címek:
+      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>
+      <br />
+      Nyílt forráskód, hibajelzés, kapcsolat:
+      <a href="https://github.com/pege10/tripblend" target="_blank" rel="noopener">github.com/pege10/tripblend</a>
+    </p>
+
+  </aside>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/hu.js"></script>
+  <script src="app.js?v=76"></script>
+  <script src="transitous.js?v=11"></script>
+  <script src="isochrone.js?v=7"></script>
+</body>
+</html>

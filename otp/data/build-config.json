@@ -1,0 +1,24 @@
+{
+  "transitFeeds": [
+    {
+      "type": "gtfs",
+      "source": "budapest_gtfs.zip",
+      "feedId": "BKK"
+    },
+    {
+      "type": "gtfs",
+      "source": "mav_gtfs.zip",
+      "feedId": "MAV"
+    },
+    {
+      "type": "gtfs",
+      "source": "volanbusz_gtfs.zip",
+      "feedId": "VOLAN"
+    }
+  ],
+  "osm": [
+    {
+      "source": "hungary-latest.osm.pbf"
+    }
+  ]
+}
