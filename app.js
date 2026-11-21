@@ -60,23 +60,25 @@ let activeBikeLimitM = 15000;
 /** „Indulás időpontja” módban: ha a tényleges indulás később, mint a megadott idő — rövid tájékoztató szöveg. */
 let departScheduleNote = null;
 
+/**
+ * Csúszka-buborék a fogantyú fölött. A helyét a CSS számolja a --p arányból (.slider-bubble):
+ * a csúszka két végén a buborék nem lóg ki a panelből, a nyila a fogantyún marad.
+ */
+function placeSliderBubble(slider, bubble, text) {
+  const min = +slider.min, max = +slider.max;
+  const pct = max > min ? (slider.value - min) / (max - min) : 0;
+  bubble.textContent = text;
+  bubble.style.setProperty("--p", String(pct));
+}
+
 function updateSliderBubble() {
-  const val = carSlider.value;
-  const min = +carSlider.min, max = +carSlider.max;
-  const pct = (val - min) / (max - min);
-  sliderBubble.textContent = `${val} perc`;
-  sliderBubble.style.left = `calc(${pct * 100}% + ${(0.5 - pct) * 16}px)`;
+  placeSliderBubble(carSlider, sliderBubble, `${carSlider.value} perc`);
 }
 carSlider.addEventListener("input", updateSliderBubble);
 updateSliderBubble();
 
 function updateBikeSliderBubble() {
-  const val = bikeKmSlider.value;
-  const min = +bikeKmSlider.min;
-  const max = +bikeKmSlider.max;
-  const pct = (val - min) / (max - min);
-  sliderBubbleBike.textContent = `${val} km`;
-  sliderBubbleBike.style.left = `calc(${pct * 100}% + ${(0.5 - pct) * 16}px)`;
+  placeSliderBubble(bikeKmSlider, sliderBubbleBike, `${bikeKmSlider.value} km`);
 }
 bikeKmSlider?.addEventListener("input", updateBikeSliderBubble);
 updateBikeSliderBubble();

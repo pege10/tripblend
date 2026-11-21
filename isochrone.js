@@ -1,18 +1,30 @@
 /* ================================================================
    TripBlend – Elérhetőség (izokron térkép)
-   Egy kiindulópontból (vagy egy célpontba érkezve) mi érhető el X perc alatt.
+   Egy kiindulópontból (vagy egy célpontba érkezve) mi érhető el X perc utazással.
 
    Adat: Transitous one-to-all (api.transitous.org/api/v6/one-to-all): az elért megállók
-   és a hozzájuk tartozó menetidő (perc). Rajz: minden megálló körül egy kör, amekkorát a
-   maradék időből (legfeljebb ISO_MAX_WALK_MIN perc) gyalog meg lehet tenni. A sávokat egy
-   vásznon (canvas) rajzoljuk Web Mercator koordinátákban, a legtávolabbitól a legközelebbi
-   felé, így minden pont a legkisebb sávja színét kapja; a vászon raszterrétegként kerül a
-   térképre a feliratok alá.
+   és a hozzájuk tartozó menetidő (perc). Egy kérés egy rögzített időponthoz méri az időt
+   (a várakozás is beleszámít), ezért egy 60 perces időablakban 15 percenként kérdezünk, és
+   megállónként a legkisebb értéket vesszük: így a menetidő legfeljebb kb. 15 perccel több a
+   valódi utazási időnél, és egy ritkán járó, de gyors busz sem esik ki.
+
+   Rajz: minden megálló körül egy kör, amekkorát a maradék időből meg lehet tenni: gyalog
+   (legfeljebb ISO_MAX_WALK_MIN perc), vagy ha a túlsó végen autó / bicikli van, azzal
+   (parkolással, a járműkerettel). A one-to-all a túlsó végi járművet nem tudja, ezt
+   légvonalban becsüljük (a sebesség a Transitous valódi autós idejeiből). A kattintás a
+   pontos útvonalat kéri le (/plan), ott mindkét végen a valódi jármű számít.
+
+   A sávokat egy vásznon (canvas) rajzoljuk Web Mercator koordinátákban, a legtávolabbitól a
+   legközelebbi felé, így minden pont a legkisebb sávja színét kapja; a vászon raszterrétegként
+   kerül a térképre a feliratok alá.
    ================================================================ */
 
 const TS_ONE_TO_ALL_URL = "https://api.transitous.org/api/v6/one-to-all";
 const ISO_WALK_MPS = 1.2;        // kb. 4,3 km/h
 const ISO_MAX_WALK_MIN = 15;     // egy megállótól legfeljebb ennyi perc séta
+const ISO_WINDOW_MIN = 60;       // indulási (vagy érkezési) időablak
+const ISO_STEP_MIN = 15;         // ennyi percenként kérdezünk az ablakon belül (4 kérés)
+const ISO_BIKE_CROW_MPS = 3.3;   // 15 km/h úton, légvonalban kb. 12 km/h
 const ISO_CANVAS_MAX_PX = 2048;
 const ISO_SOURCE = "iso-source";
 const ISO_LAYER = "iso-layer";
@@ -28,11 +40,7 @@ const isoBubble = document.getElementById("slider-bubble-iso");
 
 function updateIsoBubble() {
   if (!isoMinutesSlider || !isoBubble) return;
-  const val = +isoMinutesSlider.value;
-  const min = +isoMinutesSlider.min, max = +isoMinutesSlider.max;
-  const pct = (val - min) / (max - min);
-  isoBubble.textContent = `${val} perc`;
-  isoBubble.style.left = `calc(${pct * 100}% + ${(0.5 - pct) * 16}px)`;
+  placeSliderBubble(isoMinutesSlider, isoBubble, `${isoMinutesSlider.value} perc`);
 }
 isoMinutesSlider?.addEventListener("input", updateIsoBubble);
 updateIsoBubble();
@@ -136,21 +144,31 @@ function isoColor(i, n) {
 }
 
 /**
- * Idő a one-to-all kéréshez. Megadott időpont: indulás (Innen indulok) vagy érkezés (Ide érkezem).
- * "Most" + Ide érkezem: érkezés legkésőbb most + a max. utazási idő (vagyis ha most elindulnál).
- * @returns {{ params: object, refMs: number }}  refMs: az indulás / érkezés időpontja (jelmagyarázathoz)
+ * Időablak. "Most" (mindkét irányban) és "Időpont + Innen indulok": indulás t és t + 60 perc között.
+ * "Időpont + Ide érkezem": érkezés t - 60 perc és t között. Az utazási idő az indulástól az érkezésig tart.
+ * refs: a one-to-all kérések időpontjai, 15 percenként. "Most + Ide érkezem": a célba legkésőbb
+ * most + T (+ 15, 30...) percre kell érni, így a megtalált utak most (+ 15, 30...) után indulnak.
+ * @returns {{ kind: "depart"|"arrive", t: number, atTime: boolean, refs: object[] }}
  */
-function isoTimeParams(T) {
+function isoWindow(T) {
   const arrive = isIsoArrive();
-  if (timeModeSelect.value === "depart") {
-    const date = planningDateStr();
-    const t = /^\d{2}:\d{2}$/.test(timePick.value || "") ? timePick.value : "08:00";
-    const iso = tsIso(date, t);
-    return { params: { time: iso, arriveBy: arrive ? "true" : "false" }, refMs: Date.parse(iso) };
+  const atTime = timeModeSelect.value === "depart";
+  let t = Date.now();
+  if (atTime) {
+    const hm = /^\d{2}:\d{2}$/.test(timePick.value || "") ? timePick.value : "08:00";
+    t = Date.parse(tsIso(planningDateStr(), hm));
   }
-  if (!arrive) return { params: {}, refMs: Date.now() };
-  const refMs = Date.now() + T * 60000;
-  return { params: { time: new Date(refMs).toISOString(), arriveBy: "true" }, refMs };
+  const kind = arrive && atTime ? "arrive" : "depart";
+  const iso = (ms) => new Date(ms).toISOString();
+  const refs = [];
+  /** 0, 15, 30, 45 perc: a 45-ös kérés a 60. percig induló utakat is megtalálja (várakozással). */
+  for (let k = 0; k * ISO_STEP_MIN < ISO_WINDOW_MIN; k++) {
+    const off = k * ISO_STEP_MIN * 60000;
+    if (!arrive) refs.push({ time: iso(t + off), arriveBy: "false" });
+    else if (kind === "arrive") refs.push({ time: iso(t - off), arriveBy: "true" });
+    else refs.push({ time: iso(t + T * 60000 + off), arriveBy: "true" });
+  }
+  return { kind, t, atTime, refs };
 }
 
 async function tsFetchOneToAll(place, params, timeParams) {
@@ -159,24 +177,7 @@ async function tsFetchOneToAll(place, params, timeParams) {
     if (v == null) continue;
     q.set(k, Array.isArray(v) ? v.join(",") : String(v));
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TS_TIMEOUT_MS);
-  let res;
-  try {
-    res = await fetch(`${TS_ONE_TO_ALL_URL}?${q}`, { signal: ctrl.signal });
-  } catch (e) {
-    throw new Error(
-      e.name === "AbortError"
-        ? "A Transitous nem válaszolt időben, próbáld újra."
-        : "Nem sikerült elérni a Transitous szervert (nincs internet?).",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  let data = null;
-  try { data = await res.json(); } catch { /* nem JSON */ }
-  if (!res.ok || data?.error) throw new Error(`Transitous hiba: ${data?.error || res.status}`);
-  return data;
+  return tsFetchJson(`${TS_ONE_TO_ALL_URL}?${q}`);
 }
 
 const ISO_R = 6378137;
@@ -186,15 +187,79 @@ const isoLon = (x) => ((x / ISO_R) * 180) / Math.PI;
 const isoLat = (y) => ((2 * Math.atan(Math.exp(y / ISO_R)) - Math.PI / 2) * 180) / Math.PI;
 const isoWalkM = (min) => Math.min(min, ISO_MAX_WALK_MIN) * 60 * ISO_WALK_MPS;
 
+/**
+ * Autóval t perc alatt légvonalban kb. hány méter. A Transitous valódi autós idejeinek mediánja
+ * (falu, kisváros, Budapest belső része, 3-60 km): rövid úton kb. 38 km/h, 50 perc fölött kb. 50 km/h.
+ */
+function isoCarM(t) {
+  if (t <= 0) return 0;
+  const kmh = 38 + 12 * Math.min(1, Math.max(0, (t - 15) / 35));
+  return (kmh * 1000 * t) / 60;
+}
+function isoVehM(kind, t) {
+  if (kind === "car") return isoCarM(t);
+  if (kind === "bike") return Math.max(0, t) * 60 * ISO_BIKE_CROW_MPS;
+  return 0;
+}
+/** Hány perc a jármű légvonalban m méterre (az isoVehM inverze). */
+function isoVehMin(kind, m) {
+  if (kind === "bike") return m / ISO_BIKE_CROW_MPS / 60;
+  let lo = 0, hi = 400;
+  for (let i = 0; i < 32; i++) {
+    const mid = (lo + hi) / 2;
+    if (isoCarM(mid) < m) lo = mid; else hi = mid;
+  }
+  return hi;
+}
+const isoParkMin = (kind) => (TS_PARK_BUFFER_SEC[kind] || 0) / 60;
+
+/**
+ * Egy megállóból (vagy a kiindulópontból) rem perc alatt légvonalban elérhető távolság, méterben.
+ * Megálló: séta, vagy a túlsó végi jármű parkolással. Kiindulópont: séta, vagy jármű végig.
+ */
+function isoReachM(s, rem, d = isoData) {
+  if (rem <= 0) return 0;
+  let r = isoWalkM(rem);
+  const veh = (k, park) => {
+    if (k === "none" || rem <= park) return;
+    r = Math.max(r, isoVehM(k, Math.min(rem - park, d.limMin[k])));
+  };
+  if (s.isOrigin) {
+    veh(d.nearKind, 0);
+    veh(d.farKind, 0);
+  } else if (d.farKind !== "none") {
+    veh(d.farKind, isoParkMin(d.farKind));
+  }
+  return r;
+}
+
+/** Becsült utazási idő egy pontig (perc), ugyanazzal a szabállyal, amivel a térkép rajzol. */
+function isoEstimate(lat, lng, d = isoData) {
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  let best = Infinity;
+  for (const s of d.stops) {
+    const dist = Math.hypot((s.lon - lng) * 111320 * cosLat, (s.lat - lat) * 110540);
+    const walkMin = dist / ISO_WALK_MPS / 60;
+    if (walkMin <= ISO_MAX_WALK_MIN) best = Math.min(best, s.d + walkMin);
+    const kinds = s.isOrigin ? [d.nearKind, d.farKind] : [d.farKind];
+    for (const k of kinds) {
+      if (k === "none" || dist > isoVehM(k, d.limMin[k])) continue;
+      const park = s.isOrigin ? 0 : isoParkMin(k);
+      best = Math.min(best, s.d + isoVehMin(k, dist) + park);
+    }
+  }
+  return best;
+}
+
 function drawIso() {
   const { stops, T, bands, origin, arriveBy } = isoData;
   try { if (map.getLayer(ISO_LAYER)) map.removeLayer(ISO_LAYER); } catch { /* */ }
   try { if (map.getSource(ISO_SOURCE)) map.removeSource(ISO_SOURCE); } catch { /* */ }
 
-  /** Befoglaló téglalap Mercatorban, a legnagyobb sétakörrel együtt. */
+  /** Befoglaló téglalap Mercatorban, a legnagyobb körökkel együtt. */
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
   for (const s of stops) {
-    const r = isoWalkM(T - s.d) / Math.cos((s.lat * Math.PI) / 180);
+    const r = isoReachM(s, T - s.d) / Math.cos((s.lat * Math.PI) / 180);
     const x = isoMx(s.lon), y = isoMy(s.lat);
     x1 = Math.min(x1, x - r); x2 = Math.max(x2, x + r);
     y1 = Math.min(y1, y - r); y2 = Math.max(y2, y + r);
@@ -211,7 +276,7 @@ function drawIso() {
     ctx.beginPath();
     for (const s of stops) {
       if (s.d >= B) continue;
-      const rp = (isoWalkM(B - s.d) / Math.cos((s.lat * Math.PI) / 180)) * scale;
+      const rp = (isoReachM(s, B - s.d) / Math.cos((s.lat * Math.PI) / 180)) * scale;
       if (rp < 0.6) continue;
       const px = (isoMx(s.lon) - x1) * scale;
       const py = (y2 - isoMy(s.lat)) * scale;
@@ -255,29 +320,38 @@ function drawIso() {
   );
 }
 
-function renderIsoLegend(note) {
-  const { stops, T, bands, arriveBy, refMs, atTime } = isoData;
+/** Az időablak szövegesen, a jelmagyarázatba. */
+function isoWindowText(w) {
+  const W = ISO_WINDOW_MIN * 60000;
+  const d = new Date(w.t);
+  const day = localDateStr(d) === localDateStr(new Date())
+    ? ""
+    : `${d.toLocaleDateString("hu-HU", { month: "short", day: "numeric", weekday: "short" })} `;
+  if (w.kind === "arrive") return `Érkezés ${day}${fmtTime(w.t - W)} és ${fmtTime(w.t)} között`;
+  if (w.atTime) return `Indulás ${day}${fmtTime(w.t)} és ${fmtTime(w.t + W)} között`;
+  return `Indulás most vagy a következő ${ISO_WINDOW_MIN} percben`;
+}
+
+function renderIsoLegend(notes) {
+  const { stops, T, bands, arriveBy, win, farKind } = isoData;
   const nStops = stops.length - 1; // a kiindulópont nem megálló
-  const ref = new Date(refMs);
-  const sameDay = localDateStr(ref) === localDateStr(new Date());
-  const when = `${sameDay ? "" : `${ref.toLocaleDateString("hu-HU", { month: "short", day: "numeric", weekday: "short" })} `}${fmtTime(refMs)}`;
-  const timeLine = arriveBy
-    ? `Érkezés legkésőbb ${when}${atTime ? "" : ` (ha most indulnál)`}`
-    : `Indulás ${atTime ? when : "most"}`;
   const items = bands.map((b, i) => {
     const from = i === 0 ? 0 : bands[i - 1];
     return `<span class="iso-band"><span class="iso-swatch" style="background:${isoColor(i, bands.length)}"></span>${from}-${b} perc</span>`;
   }).join("");
+  const farTxt = farKind === "car"
+    ? ", vagy autóval a megállóig (légvonalban becsülve)"
+    : farKind === "bike" ? ", vagy biciklivel a megállóig (légvonalban becsülve)" : "";
   resultsDiv.innerHTML = `
     <div class="iso-legend">
       <h3>${arriveBy ? `Innen érsz ide ${T} percen belül` : `${T} percen belül elérhető`}: ${nStops.toLocaleString("hu-HU")} megálló</h3>
-      <p class="iso-note">${timeLine}</p>
+      <p class="iso-note">${isoWindowText(win)}. Az idő az indulástól az érkezésig tart (kb. 15 perc pontossággal).</p>
       <div class="iso-bands">${items}</div>
       <p class="iso-note">
-        A színes terület: az elért megállók, és onnan legfeljebb ${ISO_MAX_WALK_MIN} perc séta.
-        Kattints a térképre: megmutatja, kb. hány perc alatt ${arriveBy ? "érsz onnan ide" : "érsz oda"}.
+        A színes terület: az elért megállók, onnan legfeljebb ${ISO_MAX_WALK_MIN} perc séta${farTxt}.
+        Kattints a térképre: megmutatja a leggyorsabb utat lépésenként.
       </p>
-      ${note ? `<p class="iso-note">${note}</p>` : ""}
+      ${notes.map((n) => `<p class="iso-note">${n}</p>`).join("")}
     </div>`;
   resultsDiv.classList.remove("hidden");
 }
@@ -297,15 +371,19 @@ async function handleIsochrone() {
   const arriveBy = isIsoArrive();
   const leg = getLegProfile();
   /**
-   * Indulás innen: a jármű az indulási oldalon számít (preTransit). Érkezés ide: a célnál
-   * (postTransit). A másik oldali járművet a one-to-all nem tudja (a Transitous nem használja).
+   * A one-to-all a kiindulópont (one) oldali járművet tudja: indulás innen -> az indulási
+   * (first), érkezés ide -> az érkezési (last) jármű. A túlsó végit mi becsüljük (isoReachM).
    */
-  const kind = arriveBy ? leg.last : leg.first;
-  const otherKind = arriveBy ? leg.first : leg.last;
-  const maxCarSec = parseInt(carSlider.value, 10) * 60;
-  const maxBikeSec = Math.round(((parseFloat(bikeKmSlider?.value) || 15) * 1000) / TS_BIKE_MPS);
-  const endModes = kind === "car" ? ["CAR_PARKING"] : kind === "bike" ? ["BIKE"] : ["WALK"];
-  const endLimit = kind === "car" ? Math.min(maxCarSec, T * 60) : kind === "bike" ? Math.min(maxBikeSec, T * 60) : undefined;
+  const nearKind = arriveBy ? leg.last : leg.first;
+  const farKind = arriveBy ? leg.first : leg.last;
+  const maxCarMin = parseInt(carSlider.value, 10);
+  const maxBikeKm = parseFloat(bikeKmSlider?.value) || 15;
+  const limMin = {
+    car: Math.min(maxCarMin, T),
+    bike: Math.min(Math.round((maxBikeKm * 1000) / TS_BIKE_MPS / 60), T),
+  };
+  const modesFor = (k) => (k === "car" ? ["CAR_PARKING"] : k === "bike" ? ["BIKE"] : ["WALK"]);
+  const limSecFor = (k) => (k === "none" ? undefined : limMin[k] * 60);
 
   clearUI();
   clearRoute();
@@ -323,47 +401,66 @@ async function handleIsochrone() {
     const params = {
       maxTravelTime: T,
       transitModes,
-      [arriveBy ? "postTransitModes" : "preTransitModes"]: endModes,
-      [arriveBy ? "maxPostTransitTime" : "maxPreTransitTime"]: endLimit,
+      [arriveBy ? "postTransitModes" : "preTransitModes"]: modesFor(nearKind),
+      [arriveBy ? "maxPostTransitTime" : "maxPreTransitTime"]: limSecFor(nearKind),
     };
-    const tp = isoTimeParams(T);
-    const data = await tsFetchOneToAll(originCoord, params, tp.params);
+    const win = isoWindow(T);
+    /** A kérések a közös soron mennek (tsFetchJson): egyszerre legfeljebb 3, hibánál egyszer újra. */
+    const results = await Promise.allSettled(win.refs.map((r) => tsFetchOneToAll(originCoord, params, r)));
+    const ok = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    if (!ok.length) throw results[0].reason;
 
-    /** Megállók: duplikátumok (több forrás ugyanarra a pontra) közül a legrövidebb idő marad. */
+    /** Megállók: a kérések és a duplikátumok (több forrás ugyanarra a pontra) közül a legrövidebb idő marad. */
     const byKey = new Map();
-    for (const x of data.all || []) {
-      const p = x.place;
-      if (!p || !Number.isFinite(p.lat) || x.duration > T) continue;
-      const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
-      const prev = byKey.get(key);
-      if (!prev || x.duration < prev.d) byKey.set(key, { lat: p.lat, lon: p.lon, d: x.duration, name: p.name || "" });
+    for (const data of ok) {
+      for (const x of data.all || []) {
+        const p = x.place;
+        if (!p || !Number.isFinite(p.lat) || x.duration > T) continue;
+        const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
+        const prev = byKey.get(key);
+        if (!prev || x.duration < prev.d) byKey.set(key, { lat: p.lat, lon: p.lon, d: x.duration, name: p.name || "" });
+      }
     }
     const stops = [{ lat: originCoord.lat, lon: originCoord.lon, d: 0, name: "", isOrigin: true }, ...byKey.values()];
-    if (stops.length === 1) throw new Error("Ennyi idő alatt egy megálló sem érhető el innen.");
+    if (stops.length === 1 && nearKind === "none" && farKind === "none") {
+      throw new Error("Ennyi idő alatt egy megálló sem érhető el innen.");
+    }
 
+    const usesCar = leg.first === "car" || leg.last === "car";
+    const usesBike = leg.first === "bike" || leg.last === "bike";
     isoData = {
-      origin: { ...originCoord }, stops, T, bands: isoBands(T), arriveBy, kind,
-      refMs: tp.refMs, atTime: timeModeSelect.value === "depart",
-      /** A kattintásos útvonal-kéréshez: ugyanaz az idő, módok és jármű, mint az izokronnál. */
-      timeParams: tp.params,
+      origin: { ...originCoord }, stops, T, bands: isoBands(T), arriveBy, win,
+      nearKind, farKind, limMin,
+      /**
+       * A kattintásos útvonal-kéréshez: ugyanazok a módok és járművek. Itt mindkét végen a valódi
+       * jármű számít (first = az út eleje, last = a vége, iránytól függetlenül).
+       */
       planParams: {
         transitModes,
-        [arriveBy ? "postTransitModes" : "preTransitModes"]: endModes,
-        [arriveBy ? "maxPostTransitTime" : "maxPreTransitTime"]: endLimit,
-        directModes: ["WALK"],
-        maxDirectTime: ISO_MAX_WALK_MIN * 60 * 2,
-        numItineraries: 3,
+        preTransitModes: modesFor(leg.first),
+        maxPreTransitTime: limSecFor(leg.first),
+        postTransitModes: modesFor(leg.last),
+        maxPostTransitTime: limSecFor(leg.last),
+        directModes: ["WALK", ...(usesCar ? ["CAR"] : []), ...(usesBike ? ["BIKE"] : [])],
+        maxDirectTime: Math.max(ISO_MAX_WALK_MIN * 120, usesCar ? limMin.car * 60 : 0, usesBike ? limMin.bike * 60 : 0),
+        numItineraries: 5,
       },
     };
     drawIso();
 
-    let note = "";
-    if (kind === "car") note = `Autóval indulsz (legfeljebb ${Math.round(endLimit / 60)} perc), parkolás után tömegközlekedéssel.`;
-    else if (kind === "bike") note = "Biciklivel indulsz a megállóig.";
-    if (otherKind !== "none") {
-      note += ` A ${otherKind === "car" ? "autót" : "biciklit"} ${arriveBy ? "az indulási" : "az érkezési"} oldalon ez a nézet nem számolja.`;
+    const notes = [];
+    const vt = (k) => (k === "car" ? `autóval (legfeljebb ${maxCarMin} perc)` : `biciklivel (legfeljebb ${maxBikeKm} km)`);
+    const parts = [];
+    if (leg.first !== "none") parts.push(`indulásnál ${vt(leg.first)}`);
+    if (leg.last !== "none") parts.push(`érkezésnél ${vt(leg.last)}`);
+    if (parts.length) {
+      const s = parts.join(", ");
+      notes.push(`Jármű: ${s}; a tömegközlekedés mellett a végig autózás / biciklizés is számít.`);
     }
-    renderIsoLegend(note.trim());
+    if (ok.length < results.length) {
+      notes.push("A Transitous nem minden kérésre válaszolt, a térkép hiányos lehet.");
+    }
+    renderIsoLegend(notes);
     if (window.matchMedia("(max-width: 700px)").matches) {
       const sb = document.getElementById("sidebar");
       setTimeout(() => sb?.scrollTo({ top: resultsDiv.offsetTop - 12, behavior: "smooth" }), 350);
@@ -409,29 +506,50 @@ function isoPopupLegsHtml(it) {
   return `<div class="ip-head">${fmtTime(start)} → ${fmtTime(end)} | ${fmt((end - start) / 1000)}</div>${rows.join("")}`;
 }
 
-/** Kattintás az izokron térképen: becsült idő azonnal, aztán a konkrét útvonal lépésenként. */
+/**
+ * A leggyorsabb út az időablakban (a térképpel azonos szabály): legrövidebb utazási idő, aztán
+ * kevesebb átszállás. A jármű-szakasz nem lehet hosszabb a keretnél (a végig autózásra a
+ * maxDirectTime miatt kell). Ha az ablakban nincs út, a leggyorsabb ablakon kívüli jön.
+ */
+function isoPickBest(its, d0, startMs) {
+  const W = ISO_WINDOW_MIN * 60000;
+  const slack = 2 * 60000;
+  const okLeg = (l) => {
+    const sec = (Date.parse(l.endTime) - Date.parse(l.startTime)) / 1000;
+    if (l.mode === "CAR") return sec <= d0.limMin.car * 60 + 30;
+    if (l.mode === "BIKE") return sec <= d0.limMin.bike * 60 + 30;
+    return true;
+  };
+  const valid = (its || []).filter((it) => it.legs.every(okLeg));
+  const inWin = valid.filter((it) => {
+    const s = Date.parse(it.startTime), e = Date.parse(it.endTime);
+    return d0.win.kind === "arrive"
+      ? e <= d0.win.t + slack && e >= d0.win.t - W - slack
+      : s >= startMs - slack && s <= startMs + W + slack;
+  });
+  const pool = inWin.length ? inWin : valid;
+  if (!pool.length) return null;
+  const dur = (it) => Date.parse(it.endTime) - Date.parse(it.startTime);
+  const later = d0.win.kind === "arrive" ? -1 : 1;
+  pool.sort((a, b) => dur(a) - dur(b)
+    || (a.transfers || 0) - (b.transfers || 0)
+    || later * (Date.parse(a.startTime) - Date.parse(b.startTime)));
+  return { it: pool[0], inWindow: inWin.length > 0 };
+}
+
+/** Kattintás az izokron térképen: becsült idő azonnal, aztán a leggyorsabb útvonal lépésenként. */
 map.on("click", (e) => {
   if (!isIsoView() || mapClickTarget || !isoData) return;
   const { lng, lat } = e.lngLat;
-  const cosLat = Math.cos((lat * Math.PI) / 180);
-  let best = Infinity;
-  let via = null;
-  for (const s of isoData.stops) {
-    const dist = Math.hypot((s.lon - lng) * 111320 * cosLat, (s.lat - lat) * 110540);
-    const walkMin = dist / ISO_WALK_MPS / 60;
-    if (walkMin > ISO_MAX_WALK_MIN) continue;
-    const t = s.d + walkMin;
-    if (t < best) { best = t; via = { ...s, walkMin }; }
-  }
-
   const { arriveBy, T } = isoData;
+  const best = isoEstimate(lat, lng);
+
   const box = document.createElement("div");
   box.className = "iso-popup";
-  if (best <= T) {
-    box.innerHTML = `<div class="ip-est">Kb. ${Math.round(best)} perc ${arriveBy ? "innen" : "ide"}</div>`;
-  } else {
-    box.innerHTML = `<div class="ip-est">${T} perc alatt nem érhető el</div>`;
-  }
+  const est = document.createElement("div");
+  est.className = "ip-est";
+  est.textContent = best <= T ? `Kb. ${Math.round(best)} perc ${arriveBy ? "innen" : "ide"}` : `${T} perc alatt nem érhető el`;
+  box.appendChild(est);
   const steps = document.createElement("div");
   steps.className = "ip-steps";
   steps.innerHTML = '<span class="ip-dim">Útvonal keresése…</span>';
@@ -444,16 +562,8 @@ map.on("click", (e) => {
     const point = { lat, lon: lng };
     const center = { ...isoData.origin };
     const centerName = originInput.value;
-    const refMs = isoData.refMs;
+    /** Az Útvonal nézet ugyanazt az időt kapja (most / indulás / érkezés), lásd applyIsoTimeOptions. */
     setView("route");
-    if (arriveBy) {
-      /** Az útvonal ugyanarra az érkezési időre készüljön, amire az izokron. */
-      const ref = new Date(refMs);
-      timeModeSelect.value = "arrive";
-      timeModeSelect.dispatchEvent(new Event("change"));
-      datePickr.setDate(localDateStr(ref), true);
-      timePick.value = localTimeStr(ref);
-    }
     if (arriveBy) {
       destCoord = center;
       destinationInput.value = centerName;
@@ -500,21 +610,37 @@ map.on("click", (e) => {
   };
   fitPopupOnNarrow(isoPopup);
 
-  /** A konkrét útvonal (ugyanaz az idő, módok, jármű, mint az izokronnál), lépésenként. */
+  /** A konkrét útvonal: ugyanaz az időablak, módok és járművek, mint az izokronnál. */
   const token = ++isoClickToken;
   const d0 = isoData;
   const here = { lat, lon: lng };
   const from = arriveBy ? here : d0.origin;
   const to = arriveBy ? d0.origin : here;
   const popupRef = isoPopup;
-  tsFetchPlan(from, to, { ...d0.planParams, ...d0.timeParams })
+  /** "Most": az ablak a kattintás pillanatától indul (a már elment járat nem jó). */
+  const startMs = d0.win.atTime ? d0.win.t : Date.now();
+  const timeParams = d0.win.kind === "arrive"
+    ? { time: new Date(d0.win.t).toISOString(), arriveBy: "true" }
+    : { time: new Date(startMs).toISOString(), arriveBy: "false" };
+  tsFetchPlan(from, to, { ...d0.planParams, ...timeParams, searchWindow: ISO_WINDOW_MIN * 60 })
     .then((d) => {
       if (token !== isoClickToken) return;
-      const all = [...(d.itineraries || []), ...(d.direct || [])];
-      const it = arriveBy ? tsPickLatestDeparture(all) : tsPickEarliestArrival(all);
-      steps.innerHTML = it
-        ? isoPopupLegsHtml(it)
-        : '<span class="ip-dim">Ebben az időben nem találtunk útvonalat.</span>';
+      const picked = isoPickBest([...(d.itineraries || []), ...(d.direct || [])], d0, startMs);
+      if (!picked) {
+        steps.innerHTML = '<span class="ip-dim">Ebben az időben nem találtunk útvonalat.</span>';
+      } else {
+        const { it, inWindow } = picked;
+        const sec = (Date.parse(it.endTime) - Date.parse(it.startTime)) / 1000;
+        const fits = inWindow && sec <= T * 60 + 30;
+        est.textContent = fits ? `${fmt(sec)} ${arriveBy ? "innen" : "ide"}` : `${T} perc alatt nem érhető el`;
+        let note = "";
+        if (!inWindow) {
+          note = `Az időablakban nincs útvonal; ez ${fmtTime(Date.parse(it.startTime))}-kor indul.`;
+        } else if (!fits) {
+          note = `A leggyorsabb út ${fmt(sec)}.`;
+        }
+        steps.innerHTML = `${note ? `<div class="ip-dim">${note}</div>` : ""}${isoPopupLegsHtml(it)}`;
+      }
       popupRef.setDOMContent(box);
       fitPopupOnNarrow(popupRef);
     })

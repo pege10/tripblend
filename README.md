@@ -13,9 +13,10 @@ P+R útvonaltervező és elérhetőségi térkép Magyarországra. Autó, saját
 - Indulás vagy érkezés időpontjára, illetve az utolsó járatra.
 
 **Elérhetőség (izokron térkép)**
-- Egy helyből (vagy egy helyre érkezve) mi érhető el X perc alatt, színes sávokban.
-- Gyalog + tömegközlekedéssel, autóval (P+R) vagy biciklivel indulva.
-- Kattintásra kiírja az utazási ajánlatot: mivel, honnan, meddig, aztán hogyan tovább. Egy gombbal útvonalat is tervez oda.
+- Egy helyből (vagy egy helyre érkezve) mi érhető el X perc utazással, színes sávokban.
+- Az idő az utazás ideje: egy 60 perces indulási (vagy érkezési) ablakban a leggyorsabb út számít, így a ritkán járó, de gyors busz sem esik ki.
+- Gyalog + tömegközlekedéssel, és az út bármelyik végén autóval (P+R) vagy biciklivel. A túlsó végi jármű a térképen légvonalbeli becslés (a sebesség valódi autós időkből).
+- Kattintásra kiírja a leggyorsabb utat: mivel, honnan, meddig, aztán hogyan tovább. Egy gombbal útvonalat is tervez oda.
 
 Telefonon is használható: a panel alulra kerül, fölötte a térkép.
 
@@ -42,7 +43,7 @@ Böngészőben: http://localhost:8095
 - `transitous.js`: útvonaltervezés a Transitous `/plan` végpontjával; P+R, bicikli, bérbicikli, saját átszállási pont.
 - `isochrone.js`: Elérhetőség nézet a Transitous `/one-to-all` végpontjával.
 
-Egy útvonaltervezés legfeljebb 5 párhuzamos kérés (saját átszállási ponttal még 2-3), egy izokron 1, egy kattintás az izokronon 1.
+Egy útvonaltervezés legfeljebb 5 kérés (saját átszállási ponttal még 2-3), egy izokron 4, egy kattintás az izokronon 1. Minden kérés egy közös soron megy (`tsFetchJson`): a Transitous egyszerre 3 kérést enged, a negyedikre 429-et ad.
 
 ### Helyi OpenTripPlanner (opcionális)
 

@@ -1,6 +1,6 @@
 /* ================================================================
    TripBlend – Transitous (MOTIS 2) útvonal-réteg
-   Egy tervezés = 1-3 párhuzamos kérés az api.transitous.org-ra. A válaszokat
+   Egy tervezés több kérés az api.transitous.org-ra (közös soron, egyszerre legfeljebb 3). A válaszokat
    ugyanarra a "jelölt" formára alakítjuk, amit az app.js térkép- és kártyarajzolója vár
    (drawRoute, renderAlternatives). Az autó, a saját bicikli és a bérbicikli (MOL Bubi)
    szakasz a lábak között marad, sorrendben.
@@ -12,6 +12,66 @@
 
 const TS_PLAN_URL = "https://api.transitous.org/api/v6/plan";
 const TS_TIMEOUT_MS = 25000;
+/**
+ * A Transitous egy gépről egyszerre 3 kérést enged: a negyedikre azonnal 429-et ad, ami a
+ * böngészőben CORS-hibaként látszik (a hibaválaszban nincs CORS-fejléc), és sok kérés után lassít.
+ * Ezért minden kérés (tervezés, izokron, címkeresés) egy közös soron megy át.
+ */
+const TS_MAX_PARALLEL = 3;
+let tsActive = 0;
+const tsWaiting = [];
+
+function tsAcquire() {
+  return new Promise((resolve) => {
+    const go = () => {
+      tsActive++;
+      resolve(() => {
+        tsActive--;
+        tsWaiting.shift()?.();
+      });
+    };
+    if (tsActive < TS_MAX_PARALLEL) go();
+    else tsWaiting.push(go);
+  });
+}
+
+/**
+ * GET a Transitousra a közös soron át, JSON-t ad vissza. Hálózati hiba vagy 429 esetén
+ * (ez a böngészőben ugyanúgy hálózati hibának látszik) egyszer újrapróbálja kis szünet után.
+ */
+async function tsFetchJson(url) {
+  for (let attempt = 0; ; attempt++) {
+    const release = await tsAcquire();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TS_TIMEOUT_MS);
+    let res = null;
+    let data = null;
+    let netErr = null;
+    try {
+      res = await fetch(url, { signal: ctrl.signal });
+      try { data = await res.json(); } catch { /* nem JSON */ }
+    } catch (e) {
+      netErr = e;
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
+    const retryable = (netErr && netErr.name !== "AbortError") || res?.status === 429;
+    if (retryable && attempt === 0) {
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (netErr) {
+      throw new Error(
+        netErr.name === "AbortError"
+          ? "A Transitous nem válaszolt időben, próbáld újra."
+          : "Nem sikerült elérni a Transitous szervert (nincs internet, vagy most túl sok a kérés).",
+      );
+    }
+    if (!res.ok || data?.error) throw new Error(`Transitous hiba: ${data?.error || res.status}`);
+    return data;
+  }
+}
 /** Saját bicikli átlagsebessége a km-csúszka → idő átváltáshoz (m/s, kb. 15 km/h). */
 const TS_BIKE_MPS = 4.2;
 /** Tisztán autós / biciklis / bérbiciklis út felső korlátja (s). */
@@ -71,24 +131,7 @@ async function tsFetchPlan(from, to, params) {
     if (v == null) continue;
     q.set(k, Array.isArray(v) ? v.join(",") : String(v));
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TS_TIMEOUT_MS);
-  let res;
-  try {
-    res = await fetch(`${TS_PLAN_URL}?${q}`, { signal: ctrl.signal });
-  } catch (e) {
-    throw new Error(
-      e.name === "AbortError"
-        ? "A Transitous nem válaszolt időben, próbáld újra."
-        : "Nem sikerült elérni a Transitous szervert (nincs internet?).",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  let data = null;
-  try { data = await res.json(); } catch { /* nem JSON */ }
-  if (!res.ok || data?.error) throw new Error(`Transitous hiba: ${data?.error || res.status}`);
-  return data;
+  return tsFetchJson(`${TS_PLAN_URL}?${q}`);
 }
 
 function tsPlaceName(p) {
@@ -327,9 +370,7 @@ function onTransferPointPicked(target, coord, name) {
 async function tsGeocodeStop(text) {
   try {
     const q = new URLSearchParams({ text, language: "hu", place: "47.5,19.0", numResults: "5" });
-    const res = await fetch(`${TS_GEOCODE_URL}?${q}`);
-    if (!res.ok) return null;
-    const list = await res.json();
+    const list = await tsFetchJson(`${TS_GEOCODE_URL}?${q}`);
     if (!Array.isArray(list) || !list.length) return null;
     const m = list.slice(0, 3).find((x) => x.type === "STOP") || list[0];
     return Number.isFinite(m.lat) ? { lat: m.lat, lon: m.lon, name: text } : null;

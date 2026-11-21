@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=60" />
+  <link rel="stylesheet" href="style.css?v=61" />
 </head>
 <body>
 
@@ -88,8 +88,7 @@
     <div class="form-group transport-modes-group">
       <label>Közlekedési módok</label>
       <div class="segment-block segment-motor-stack">
-        <div class="motor-segment-parens" title="Bicikli rész (opcionális)">
-          <span class="bicikli-paren" aria-hidden="true">(</span>
+        <div class="motor-segment-parens">
           <div class="motor-segment">
         <label class="mode-chip segment-motor-chip segment-motor-bike" title="Bicikli a szakasz elején / végén">
           <input type="checkbox" id="use-bike" class="segment-motor-input" />
@@ -130,7 +129,6 @@
           </div>
         </div>
         </div>
-          <span class="bicikli-paren" aria-hidden="true">)</span>
         </div>
 
         <div class="motor-segment">
@@ -182,6 +180,7 @@
         <button type="button" class="mode-chip active" data-mode="SUBWAY" title="Metró"><span class="mi">subway</span> Metró</button>
         <button type="button" class="mode-chip" data-mode="RENTAL" title="Bérbicikli (MOL Bubi) az út elején, végén vagy végig"><span class="mi">pedal_bike</span> MOL Bubi</button>
       </div>
+      <p class="view-hint iso-only">A MOL Bubi és a saját átszállási pont (P+R, bicikli) az Útvonal fülön van.</p>
     </div>
 
     <button id="plan-btn">Útvonaltervezés</button>
@@ -206,8 +205,8 @@
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/hu.js"></script>
-  <script src="app.js?v=76"></script>
-  <script src="transitous.js?v=11"></script>
-  <script src="isochrone.js?v=7"></script>
+  <script src="app.js?v=77"></script>
+  <script src="transitous.js?v=12"></script>
+  <script src="isochrone.js?v=9"></script>
 </body>
 </html>
