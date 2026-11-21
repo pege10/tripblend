@@ -508,10 +508,18 @@ function isoPopupLegsHtml(it) {
   return `<div class="ip-head">${fmtTime(start)} → ${fmtTime(end)} | ${fmt((end - start) / 1000)}</div>${rows.join("")}`;
 }
 
+/** Ennyi percen belül két út egyformán gyors: a kevesebb átszállásos nyer (a Google is így választ). */
+const ISO_TIE_MIN = 3;
+
 /**
- * A leggyorsabb út az időablakban (a térképpel azonos szabály): legrövidebb utazási idő, aztán
- * kevesebb átszállás. A jármű-szakasz nem lehet hosszabb a keretnél (a végig autózásra a
- * maxDirectTime miatt kell). Ha az ablakban nincs út, a leggyorsabb ablakon kívüli jön.
+ * A leggyorsabb út az időablakban (a térképpel azonos szabály): legrövidebb utazási idő; a
+ * leggyorsabbnál legfeljebb ISO_TIE_MIN perccel hosszabbak közül a kevesebb átszállásos. A
+ * jármű-szakasz nem lehet hosszabb a keretnél (a végig autózásra a maxDirectTime miatt kell). Ha
+ * az ablakban nincs út, a leggyorsabb ablakon kívüli jön.
+ *
+ * alt: amit a Google ajánlana. Érkezésnél a legkésőbb induló, még időben érkező út, indulásnál a
+ * leghamarabb érkező. A leggyorsabb út az ablak elején is lehet (9:00-ás érkezésnél 8:00-kor ér
+ * oda), ezért ha az alt legalább 10 perccel közelebb van a megadott időhöz, azt is megmutatjuk.
  */
 function isoPickBest(its, d0, startMs) {
   const W = ISO_WINDOW_MIN * 60000;
@@ -532,11 +540,41 @@ function isoPickBest(its, d0, startMs) {
   const pool = inWin.length ? inWin : valid;
   if (!pool.length) return null;
   const dur = (it) => Date.parse(it.endTime) - Date.parse(it.startTime);
-  const later = d0.win.kind === "arrive" ? -1 : 1;
+  const arrive = d0.win.kind === "arrive";
+  const later = arrive ? -1 : 1;
   pool.sort((a, b) => dur(a) - dur(b)
     || (a.transfers || 0) - (b.transfers || 0)
     || later * (Date.parse(a.startTime) - Date.parse(b.startTime)));
-  return { it: pool[0], inWindow: inWin.length > 0 };
+  /** Döntetlen: a leggyorsabbhoz közeli, kevesebb átszállásos, ha ugyanúgy belefér a keretbe. */
+  const fastest = dur(pool[0]);
+  const limit = d0.T * 60000 + 30000;
+  const tie = pool.filter((it) => dur(it) <= fastest + ISO_TIE_MIN * 60000 && (fastest > limit || dur(it) <= limit));
+  tie.sort((a, b) => (a.transfers || 0) - (b.transfers || 0) || dur(a) - dur(b));
+  const it = tie[0] || pool[0];
+
+  let alt = null;
+  if (inWin.length) {
+    const near = [...inWin].sort((a, b) => (arrive
+      ? Date.parse(b.startTime) - Date.parse(a.startTime)
+      : Date.parse(a.endTime) - Date.parse(b.endTime)) || dur(a) - dur(b));
+    const gain = arrive
+      ? Date.parse(near[0].startTime) - Date.parse(it.startTime)
+      : Date.parse(it.endTime) - Date.parse(near[0].endTime);
+    if (gain >= 10 * 60000) alt = near[0];
+  }
+  return { it, inWindow: inWin.length > 0, alt };
+}
+
+/** Az alternatíva egy sorban: mikor indul, mikor ér oda, mennyi idő, melyik járatokkal. */
+function isoAltHtml(alt, arriveBy, atMs) {
+  const start = Date.parse(alt.startTime);
+  const end = Date.parse(alt.endTime);
+  const chain = alt.legs.map(tsConvertLeg).filter((l) => l.mode !== "WALK").map(legName).join(" > ");
+  const lead = arriveBy
+    ? `Ha ${fmtTime(atMs)}-ra kell odaérned, a legkésőbbi indulás:`
+    : "Leghamarabb így érsz oda:";
+  return `<div class="ip-alt"><div class="ip-dim">${lead}</div>`
+    + `<b>${fmtTime(start)} → ${fmtTime(end)}</b> | ${fmt((end - start) / 1000)}${chain ? `<br>${chain}` : ""}</div>`;
 }
 
 /** Kattintás az izokron térképen: becsült idő azonnal, aztán a leggyorsabb útvonal lépésenként. */
@@ -631,7 +669,7 @@ map.on("click", (e) => {
       if (!picked) {
         steps.innerHTML = '<span class="ip-dim">Ebben az időben nem találtunk útvonalat.</span>';
       } else {
-        const { it, inWindow } = picked;
+        const { it, inWindow, alt } = picked;
         const sec = (Date.parse(it.endTime) - Date.parse(it.startTime)) / 1000;
         const fits = inWindow && sec <= T * 60 + 30;
         est.textContent = fits ? `${fmt(sec)} ${arriveBy ? "innen" : "ide"}` : `${T} perc alatt nem érhető el`;
@@ -642,6 +680,8 @@ map.on("click", (e) => {
           note = `A leggyorsabb út ${fmt(sec)}.`;
         }
         steps.innerHTML = `${note ? `<div class="ip-dim">${note}</div>` : ""}${isoPopupLegsHtml(it)}`;
+        /** A lépések alatt, a görgetett részen kívül, hogy mindig látsszon. */
+        if (alt) steps.insertAdjacentHTML("afterend", isoAltHtml(alt, arriveBy, d0.win.t));
       }
       popupRef.setDOMContent(box);
       fitPopupOnNarrow(popupRef);

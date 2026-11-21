@@ -760,6 +760,7 @@ body.backend-otp .view-hint { display: none !important; }
 .iso-popup .ip-row { display: flex; gap: 6px; align-items: flex-start; }
 .iso-popup .ip-row > .mi { margin-top: 1px; flex-shrink: 0; color: #475569; }
 .iso-popup .ip-dim { color: #64748b; }
+.iso-popup .ip-alt { margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0; }
 .iso-popup-wrap .maplibregl-popup-content { padding: 12px 14px; border-radius: 12px; }
 .iso-popup .ip-est { padding-right: 28px; }
 .maplibregl-popup-close-button {
@@ -809,6 +810,8 @@ body.backend-otp .transfer-point { display: none; }
   #map { height: 100dvh; }
 
   .iso-popup .ip-steps { max-height: 150px; }
+  /** Az alternatíva sora miatt a lépések rövidebbek, hogy az egész ablak a panel fölé férjen. */
+  .iso-popup:has(.ip-alt) .ip-steps { max-height: 90px; }
 
   #sidebar {
     top: auto;
