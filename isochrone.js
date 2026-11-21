@@ -4,8 +4,8 @@
 
    Adat: Transitous one-to-all (api.transitous.org/api/v6/one-to-all): az elért megállók
    és a hozzájuk tartozó menetidő (perc). Egy kérés egy rögzített időponthoz méri az időt
-   (a várakozás is beleszámít), ezért egy 60 perces időablakban 15 percenként kérdezünk, és
-   megállónként a legkisebb értéket vesszük: így a menetidő legfeljebb kb. 15 perccel több a
+   (a várakozás is beleszámít), ezért egy 60 perces időablakban 10 percenként kérdezünk, és
+   megállónként a legkisebb értéket vesszük: így a menetidő legfeljebb kb. 10 perccel több a
    valódi utazási időnél, és egy ritkán járó, de gyors busz sem esik ki.
 
    Rajz: minden megálló körül egy kör, amekkorát a maradék időből meg lehet tenni: gyalog
@@ -23,7 +23,7 @@ const TS_ONE_TO_ALL_URL = "https://api.transitous.org/api/v6/one-to-all";
 const ISO_WALK_MPS = 1.2;        // kb. 4,3 km/h
 const ISO_MAX_WALK_MIN = 15;     // egy megállótól legfeljebb ennyi perc séta
 const ISO_WINDOW_MIN = 60;       // indulási (vagy érkezési) időablak
-const ISO_STEP_MIN = 15;         // ennyi percenként kérdezünk az ablakon belül (4 kérés)
+const ISO_STEP_MIN = 10;         // ennyi percenként kérdezünk az ablakon belül (6 kérés)
 const ISO_BIKE_CROW_MPS = 3.3;   // 15 km/h úton, légvonalban kb. 12 km/h
 const ISO_CANVAS_MAX_PX = 2048;
 const ISO_SOURCE = "iso-source";
@@ -134,7 +134,7 @@ function isoColor(i, n) {
  * Időablak. "Most indulok" és "Indulás időpontja": indulás t és t + 60 perc között. "Érkezés
  * időpontja": érkezés t - 60 perc és t között. Mindkét irányban (Innen indulok / Ide érkezem)
  * ugyanígy értendő; az utazási idő az indulástól az érkezésig tart.
- * refs: one-to-all kérések, az indulásuk (dep) 15 percenként: indulási ablakban t-től később,
+ * refs: one-to-all kérések, az indulásuk (dep) ISO_STEP_MIN percenként: indulási ablakban t-től később,
  * érkezésiben a határ előtt T perccel, onnan korábban. Innen indulok: a kérés ideje az indulás.
  * Ide érkezem: a kérés ideje az érkezési határ (dep + T), így a megtalált utak dep után indulnak.
  * Mindkét esetben maxTravelTime = T, tehát az érkezés legkésőbb dep + T.
@@ -152,7 +152,7 @@ function isoWindow(T) {
   const kind = mode === "arrive" ? "arrive" : "depart";
   const iso = (ms) => new Date(ms).toISOString();
   const refs = [];
-  /** 0, 15, 30, 45 perc: a 45-ös kérés a 60. percig induló utakat is megtalálja (várakozással). */
+  /** 0, 10, ... 50 perc: az utolsó kérés a 60. percig induló utakat is megtalálja (várakozással). */
   for (let k = 0; k * ISO_STEP_MIN < ISO_WINDOW_MIN; k++) {
     const off = k * ISO_STEP_MIN * 60000;
     const dep = kind === "arrive" ? t - T * 60000 - off : t + off;
@@ -178,12 +178,15 @@ const isoLat = (y) => ((2 * Math.atan(Math.exp(y / ISO_R)) - Math.PI / 2) * 180)
 const isoWalkM = (min) => Math.min(min, ISO_MAX_WALK_MIN) * 60 * ISO_WALK_MPS;
 
 /**
- * Autóval t perc alatt légvonalban kb. hány méter. A Transitous valódi autós idejeinek mediánja
- * (falu, kisváros, Budapest belső része, 3-60 km): rövid úton kb. 38 km/h, 50 perc fölött kb. 50 km/h.
+ * Autóval t perc alatt légvonalban kb. hány méter, a Transitous valódi autós idejeiből (falu,
+ * kisváros, Budapest belső része, 3-60 km, 200 út). A medián helyett a felső harmad határa
+ * (65. percentilis): rövid úton kb. 41 km/h, 55 perc fölött kb. 54 km/h. A medián a határon lévő
+ * helyeket rendre kihagyta (pl. Csákberény -> Székesfehérvár: becslés 28 perc, valójában 22);
+ * a pontos időt úgyis a kattintás adja.
  */
 function isoCarM(t) {
   if (t <= 0) return 0;
-  const kmh = 38 + 12 * Math.min(1, Math.max(0, (t - 15) / 35));
+  const kmh = 41 + 13 * Math.min(1, Math.max(0, (t - 15) / 40));
   return (kmh * 1000 * t) / 60;
 }
 function isoVehM(kind, t) {
@@ -335,7 +338,7 @@ function renderIsoLegend(notes) {
   resultsDiv.innerHTML = `
     <div class="iso-legend">
       <h3>${arriveBy ? `Innen érsz ide ${T} percen belül` : `${T} percen belül elérhető`}: ${nStops.toLocaleString("hu-HU")} megálló</h3>
-      <p class="iso-note">${isoWindowText(win)}. Az idő az indulástól az érkezésig tart (kb. 15 perc pontossággal).</p>
+      <p class="iso-note">${isoWindowText(win)}. Az idő az indulástól az érkezésig tart (kb. 10 perc pontossággal).</p>
       <div class="iso-bands">${items}</div>
       <p class="iso-note">
         A színes terület: az elért megállók, onnan legfeljebb ${ISO_MAX_WALK_MIN} perc séta${farTxt}.
@@ -373,7 +376,8 @@ async function handleIsochrone() {
     bike: Math.min(Math.round((maxBikeKm * 1000) / TS_BIKE_MPS / 60), T),
   };
   const modesFor = (k) => (k === "car" ? ["CAR_PARKING"] : k === "bike" ? ["BIKE"] : ["WALK"]);
-  const limSecFor = (k) => (k === "none" ? undefined : limMin[k] * 60);
+  /** Autónál a Transitous kerete a parkolótól tartó sétát is tartalmazza (TS_PARK_WALK_SEC). */
+  const limSecFor = (k) => (k === "car" ? limMin.car * 60 + TS_PARK_WALK_SEC : k === "bike" ? limMin.bike * 60 : undefined);
 
   clearUI();
   clearRoute();

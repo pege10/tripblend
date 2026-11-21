@@ -78,6 +78,22 @@ const TS_BIKE_MPS = 4.2;
 const TS_MAX_DIRECT_SEC = 4 * 3600;
 /** MOL Bubi (és séta) az út egyik végén, ahol nincs saját jármű: legfeljebb ennyi (s). */
 const TS_RENTAL_END_SEC = 1800;
+/**
+ * A Transitous autós kerete (maxPre/PostTransitTime) a parkolótól a megállóig tartó sétát is
+ * tartalmazza (Székesfehérváron pl. 7 perc). A csúszka az autózás ideje, ezért ennyivel többet
+ * kérünk, és utána az autós lábat szűrjük a csúszkára.
+ */
+const TS_PARK_WALK_SEC = 600;
+/** Vasúti / HÉV-megálló (a one-to-all és a címkereső `modes` mezője alapján). */
+const TS_RAIL_LIKE = new Set(["RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LONG_DISTANCE", "HIGHSPEED_RAIL", "NIGHT_RAIL", "SUBURBAN"]);
+/** Ennyi saját keresésű P+R-állomást próbálunk ki tervezésenként (lásd tsPickScanStations). */
+const TS_SCAN_MAX = 2;
+
+/** Két pont távolsága méterben (kis távolságra elég a síkbeli közelítés). */
+function tsDistM(a, b) {
+  const cosLat = Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180);
+  return Math.hypot((a.lon - b.lon) * 111320 * cosLat, (a.lat - b.lat) * 110540);
+}
 
 const TS_RAIL_MODES = [
   "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LONG_DISTANCE", "HIGHSPEED_RAIL", "NIGHT_RAIL",
@@ -310,25 +326,12 @@ function loadSavedPoints() {
   }
 }
 
-function renderSavedPoints() {
-  const dl = document.getElementById("saved-points");
-  if (!dl) return;
-  dl.innerHTML = "";
-  for (const p of loadSavedPoints()) {
-    const o = document.createElement("option");
-    o.value = p.name;
-    dl.appendChild(o);
-  }
-}
-
-/** A használt pontokat megjegyezzük (böngészőnként), és a mezőkben felajánljuk. */
+/** A használt pontokat megjegyezzük (böngészőnként); a javaslatlista felajánlja őket (suggest.js). */
 function savePoint(p) {
   const list = loadSavedPoints().filter((x) => x.name !== p.name);
   list.unshift({ name: p.name, lat: p.lat, lon: p.lon });
   try { localStorage.setItem(TS_SAVED_POINTS_KEY, JSON.stringify(list.slice(0, 12))); } catch { /* */ }
-  renderSavedPoints();
 }
-renderSavedPoints();
 
 function updateTransferMarkers() {
   transferMarkers.forEach((m) => m.remove());
@@ -379,6 +382,67 @@ async function tsGeocodeStop(text) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Idő a P+R-állomáskereső one-to-all kéréséhez (az Útvonal nézet időbeállításából).
+ * first (autó az indulásnál): a cél felől, érkezési határral. last: az indulástól, indulási idővel.
+ */
+function tsScanTimeParams(position) {
+  const mode = timeModeSelect.value;
+  const hm = /^\d{2}:\d{2}$/.test(timePick.value || "") ? timePick.value : "08:00";
+  const t0 = mode === "now" ? Date.now() : Date.parse(tsIso(planningDateStr(), mode === "last" ? "23:59" : hm));
+  const arriveMode = mode === "arrive" || mode === "last";
+  const H2 = 120 * 60000;
+  if (position === "first") {
+    return { time: new Date(arriveMode ? t0 : t0 + H2).toISOString(), arriveBy: "true" };
+  }
+  return { time: new Date(arriveMode ? t0 - H2 : t0).toISOString(), arriveBy: "false" };
+}
+
+/**
+ * Saját P+R-keresés vasútállomásokra. A Transitous csak ott parkoltat, ahol a parkolót ismeri
+ * (Bicskén pl. nem), és ugyanarra a vonatra mindig a legtöbb autózással elérhető állomást adja
+ * (a későbbi indulás nyer). Ezért a másik vég felőli one-to-all megállóiból kiválasztjuk az autóval
+ * elérhető vasútállomásokat, becsült összidő szerint (légvonalas autóidő + parkolás + menetidő),
+ * és azokból, amelyek nincsenek 2 km-en belül a már megtalált felszállóhelyekhez, a legjobb kettőt.
+ * Ezekre a hívó saját ponttal tervez (tsViaPointCandidate: autó közvetlenül az állomásig).
+ * @param {object|null} data  one-to-all válasz
+ * @param {{lat:number, lon:number}} anchor  az autós vég (indulás vagy cél)
+ * @param {{lat:number, lon:number}[]} skip  ezek közelében már van ajánlat
+ */
+function tsPickScanStations(data, anchor, maxCarSec, skip) {
+  const cands = [];
+  for (const x of data?.all || []) {
+    const p = x.place;
+    if (!p || !Number.isFinite(p.lat) || !(p.modes || []).some((m) => TS_RAIL_LIKE.has(m))) continue;
+    const dist = tsDistM(anchor, p);
+    /**
+     * A sarokig autózás nem P+R. A légvonalas becslés vidéken sokat ráhagy (Csákberény -> Bicske:
+     * 34 perc, valójában 27), ezért itt a keret 1,3-szorosáig engedünk; a pontos autóidőt a terv
+     * adja, és a csúszkánál hosszabb autózású ajánlat utána kiesik.
+     */
+    if (dist < 1500 || isoVehMin("car", dist) > (maxCarSec / 60) * 1.3) continue;
+    if (skip.some((s) => tsDistM(s, p) < 2000)) continue;
+    const carMin = isoVehMin("car", dist);
+    cands.push({ lat: p.lat, lon: p.lon, name: p.name, carMin, est: carMin + TS_PARK_BUFFER_SEC.car / 60 + x.duration });
+  }
+  cands.sort((a, b) => a.est - b.est);
+  /**
+   * 2 km-en belül egy állomás. Ha a becsült összidő legfeljebb 3 percben tér el, a kevesebb
+   * autózással elérhető marad (pl. Bicske és Bicske alsó: ugyanaz az S10, a főállomás közelebb van).
+   */
+  const out = [];
+  for (const c of cands) {
+    const i = out.findIndex((o) => o.name === c.name || tsDistM(o, c) < 2000);
+    if (i >= 0) {
+      if (c.est - out[i].est <= 3 && c.carMin < out[i].carMin) out[i] = c;
+      continue;
+    }
+    if (out.length < TS_SCAN_MAX) out.push(c);
+    else if (c.est > out[out.length - 1].est + 3) break;
+  }
+  return out;
 }
 
 /** A beírt vagy kijelölt saját pont koordinátái; null, ha a mező üres. */
@@ -595,7 +659,7 @@ async function handlePlanTransitous() {
      * nem fér bele (pl. Keleti -> Rózsafa utca: 3 + 14 + 5 perc), így Bubis utat sosem adott.
      */
     const endLimit = (kind, carSec = maxCarSec) =>
-      kind === "car" ? carSec : kind === "bike" ? maxBikeSec : useRental ? TS_RENTAL_END_SEC : undefined;
+      kind === "car" ? carSec + TS_PARK_WALK_SEC : kind === "bike" ? maxBikeSec : useRental ? TS_RENTAL_END_SEC : undefined;
     const rentalFF = useRental ? ["BICYCLE"] : undefined;
 
     const directModes = [];
@@ -634,15 +698,27 @@ async function handlePlanTransitous() {
       /**
        * 3) Kisebb autós keretekkel is: a Transitous kérésenként a leggyorsabbat adja, így egy keret
        * mellett a köztes P+R állomások kimaradnak (pl. Csákberény -> Budapest: 45 percnél Biatorbágy,
-       * a felénél Székesfehérvár, a 27 perces Bicske egyiknél sem). 70, 45 és 25 százaléknál is kérünk.
+       * a felénél Székesfehérvár). 65 és 35 százaléknál is kérünk; a Transitous által nem ismert
+       * P+R-eket (pl. Bicske) a vasútállomás-keresés pótolja (5).
        */
       if (leg.first === "car" || leg.last === "car") {
-        const limits = [0.7, 0.45, 0.25]
+        const limits = [0.65, 0.35]
           .map((f) => Math.round((maxCarSec * f) / 60) * 60)
           .filter((s, i, a) => s >= 300 && a.indexOf(s) === i);
         for (const s of limits) requests.push({ kind: "lessCar", params: vehicleParams(s) });
       }
     }
+
+    /** Saját ponton át tervezésnél a másik vég beállításai (mód, keret, Bubi-szűrő). */
+    const viaCtx = (pos) => {
+      const otherKind = pos === "first" ? leg.last : leg.first;
+      return {
+        transitModes,
+        otherEnd: endModes(otherKind),
+        otherLimit: endLimit(otherKind),
+        otherFF: otherKind === "none" ? rentalFF : undefined,
+      };
+    };
 
     /** 4) Saját átszállási pont(ok): azon a végen, ahol az autó / a bicikli be van kapcsolva. */
     const viaJobs = [];
@@ -658,21 +734,21 @@ async function handlePlanTransitous() {
           viaNotes.push(`A saját ${kind === "car" ? "P+R" : "átszállási"} pont nem található (${e.message}).`);
         }
         if (!point) continue;
-        const otherKind = pos === "first" ? leg.last : leg.first;
-        const ctx = {
-          transitModes,
-          otherEnd: endModes(otherKind),
-          otherLimit: endLimit(otherKind),
-          otherFF: otherKind === "none" ? rentalFF : undefined,
-        };
         viaJobs.push({
           kind,
           point,
-          result: tsViaPointCandidate(origin, dest, point, kind, pos, ctx)
+          result: tsViaPointCandidate(origin, dest, point, kind, pos, viaCtx(pos))
             .then((c) => ({ c }), (err) => ({ err })),
         });
       }
     }
+
+    /** 5) Vasútállomás-keresés az autós végen (tsPickScanStations): a one-to-all már most indul. */
+    const carPos = leg.first === "car" ? "first" : leg.last === "car" ? "last" : null;
+    const scanData = transitModes && carPos
+      ? tsFetchOneToAll(carPos === "first" ? dest : origin, { maxTravelTime: 120, transitModes }, tsScanTimeParams(carPos))
+        .catch(() => null)
+      : Promise.resolve(null);
 
     setLoading(true, "Tervezés… (Transitous)");
     const settled = await Promise.allSettled(requests.map((r) => tsFetchPlan(origin, dest, r.params)));
@@ -704,9 +780,39 @@ async function handlePlanTransitous() {
         if (c && c.tag !== "pureTransit") vehicleAll.push(c);
       }
     }
+
+    /**
+     * 5) folytatás: a megtalált P+R-ek felszállóhelyei (és a saját pont) mellett nem keresünk újat;
+     * a többi autóval elérhető vasútállomás közül a legjobb kettőn át saját ponttal tervezünk.
+     */
+    if (carPos) {
+      const skip = [];
+      for (const c of vehicleAll) {
+        if (c.tag !== "mixed") continue;
+        const tr = c.transit.legs.filter((l) => modeCat(l.mode) === "transit");
+        const stop = carPos === "first" ? tr[0]?.from : tr[tr.length - 1]?.to;
+        if (Number.isFinite(stop?.lat)) skip.push({ lat: stop.lat, lon: stop.lon });
+      }
+      for (const job of viaJobs) if (job.kind === "car") skip.push(job.point);
+      const picks = tsPickScanStations(await scanData, carPos === "first" ? origin : dest, maxCarSec, skip);
+      const found = await Promise.all(picks.map((p) =>
+        tsViaPointCandidate(origin, dest, p, "car", carPos, viaCtx(carPos)).catch(() => null)));
+      for (const c of found) {
+        if (!c) continue;
+        c.customPoint = null;
+        c.showAlways = false;
+        c.savedSec = baselineSec != null ? baselineSec - c.totalSec : 0;
+        vehicleAll.push(c);
+      }
+    }
+
     vehicleAll.sort((a, b) => a.totalSec - b.totalSec || tsByTime(a, b));
     const vehicle = [];
-    for (const c of vehicleAll) add(vehicle, c, false);
+    for (const c of vehicleAll) {
+      /** A csúszka az autózás ideje (a kérés kerete a parkolótól tartó sétát is tartalmazza). */
+      if (totalCarMotorSec(c) > maxCarSec + 30) continue;
+      add(vehicle, c, false);
+    }
 
     const direct = [];
     for (const it of pureData?.direct || []) add(direct, tsCandidate(it, baselineSec));

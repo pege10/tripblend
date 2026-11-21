@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=61" />
+  <link rel="stylesheet" href="style.css?v=62" />
 </head>
 <body>
 
@@ -122,7 +122,7 @@
           <div class="form-group transfer-point route-only">
             <label for="bike-point">Saját átszállási pont <span class="opt">(nem kötelező)</span></label>
             <div class="input-row">
-              <input type="text" id="bike-point" list="saved-points" placeholder="Hol szállsz át a bicikliről?" autocomplete="off" />
+              <input type="text" id="bike-point" placeholder="Hol szállsz át a bicikliről?" autocomplete="off" />
               <button type="button" class="pick-btn" id="pick-bike-point" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
             </div>
           </div>
@@ -164,7 +164,7 @@
           <div class="form-group transfer-point route-only">
             <label for="car-point">Saját P+R pont <span class="opt">(nem kötelező)</span></label>
             <div class="input-row">
-              <input type="text" id="car-point" list="saved-points" placeholder="pl. Bicske, vasútállomás" autocomplete="off" />
+              <input type="text" id="car-point" placeholder="pl. Bicske vasútállomás" autocomplete="off" />
               <button type="button" class="pick-btn" id="pick-car-point" title="Válaszd ki a térképen"><span class="mi">my_location</span></button>
             </div>
           </div>
@@ -189,8 +189,6 @@
 
     <div id="error" class="error hidden"></div>
 
-    <datalist id="saved-points"></datalist>
-
     <p class="data-credit">
       Útvonaltervezés: <a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>
       (menetrend- és bérbicikli-adatok forrásai) | Térkép és címek:
@@ -206,7 +204,8 @@
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/hu.js"></script>
   <script src="app.js?v=78"></script>
-  <script src="transitous.js?v=14"></script>
-  <script src="isochrone.js?v=10"></script>
+  <script src="transitous.js?v=17"></script>
+  <script src="isochrone.js?v=11"></script>
+  <script src="suggest.js?v=1"></script>
 </body>
 </html>
