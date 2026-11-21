@@ -24,6 +24,7 @@ const ISO_WALK_MPS = 1.2;        // kb. 4,3 km/h
 const ISO_MAX_WALK_MIN = 15;     // egy megállótól legfeljebb ennyi perc séta
 const ISO_WINDOW_MIN = 60;       // indulási (vagy érkezési) időablak
 const ISO_STEP_MIN = 10;         // ennyi percenként kérdezünk az ablakon belül (6 kérés)
+const ISO_SLACK_MIN = ISO_STEP_MIN / 2; // a lépésközből adódó várható fölösleges várakozás (lásd handleIsochrone)
 const ISO_BIKE_CROW_MPS = 3.3;   // 15 km/h úton, légvonalban kb. 12 km/h
 const ISO_CANVAS_MAX_PX = 2048;
 const ISO_SOURCE = "iso-source";
@@ -162,7 +163,7 @@ function isoWindow(T) {
 }
 
 async function tsFetchOneToAll(place, params, timeParams) {
-  const q = new URLSearchParams({ one: `${place.lat},${place.lon}`, ...timeParams });
+  const q = new URLSearchParams({ one: `${place.lat},${place.lon}`, ...TS_TRANSFER_PARAMS, ...timeParams });
   for (const [k, v] of Object.entries(params)) {
     if (v == null) continue;
     q.set(k, Array.isArray(v) ? v.join(",") : String(v));
@@ -338,7 +339,7 @@ function renderIsoLegend(notes) {
   resultsDiv.innerHTML = `
     <div class="iso-legend">
       <h3>${arriveBy ? `Innen érsz ide ${T} percen belül` : `${T} percen belül elérhető`}: ${nStops.toLocaleString("hu-HU")} megálló</h3>
-      <p class="iso-note">${isoWindowText(win)}. Az idő az indulástól az érkezésig tart (kb. 10 perc pontossággal).</p>
+      <p class="iso-note">${isoWindowText(win)}. Az idő az indulástól az érkezésig tart (kb. 5 perc pontossággal).</p>
       <div class="iso-bands">${items}</div>
       <p class="iso-note">
         A színes terület: az elért megállók, onnan legfeljebb ${ISO_MAX_WALK_MIN} perc séta${farTxt}.
@@ -393,7 +394,8 @@ async function handleIsochrone() {
     updatePickMarkers();
 
     const params = {
-      maxTravelTime: T,
+      /** A határon lévő megállók is jöjjenek (a levonás után még beleférhetnek); a szerver legfeljebb 120-at enged. */
+      maxTravelTime: Math.min(120, T + ISO_SLACK_MIN),
       transitModes,
       [arriveBy ? "postTransitModes" : "preTransitModes"]: modesFor(nearKind),
       [arriveBy ? "maxPostTransitTime" : "maxPreTransitTime"]: limSecFor(nearKind),
@@ -404,15 +406,21 @@ async function handleIsochrone() {
     const ok = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
     if (!ok.length) throw results[0].reason;
 
-    /** Megállók: a kérések és a duplikátumok (több forrás ugyanarra a pontra) közül a legrövidebb idő marad. */
+    /**
+     * Megállók: a kérések és a duplikátumok (több forrás ugyanarra a pontra) közül a legrövidebb idő
+     * marad, mínusz ISO_SLACK_MIN. Egy kérés a saját időpontjához mér, így a legjobb érték is 0-10 perc
+     * fölösleges várakozást tartalmaz (átlagosan 5-öt); a Google-összevetésben a térkép emiatt 0-8
+     * perccel a pontos idő fölött volt, és a határon lévő helyek kiestek.
+     */
     const byKey = new Map();
     for (const data of ok) {
       for (const x of data.all || []) {
         const p = x.place;
-        if (!p || !Number.isFinite(p.lat) || x.duration > T) continue;
+        const d = Math.max(0, x.duration - ISO_SLACK_MIN);
+        if (!p || !Number.isFinite(p.lat) || d > T) continue;
         const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
         const prev = byKey.get(key);
-        if (!prev || x.duration < prev.d) byKey.set(key, { lat: p.lat, lon: p.lon, d: x.duration, name: p.name || "" });
+        if (!prev || d < prev.d) byKey.set(key, { lat: p.lat, lon: p.lon, d, name: p.name || "" });
       }
     }
     const stops = [{ lat: originCoord.lat, lon: originCoord.lon, d: 0, name: "", isOrigin: true }, ...byKey.values()];

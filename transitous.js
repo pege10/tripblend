@@ -89,6 +89,15 @@ const TS_RAIL_LIKE = new Set(["RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LO
 /** Ennyi saját keresésű P+R-állomást próbálunk ki tervezésenként (lásd tsPickScanStations). */
 const TS_SCAN_MAX = 2;
 
+/**
+ * Átszállási idő minden kérésben (tervezés, izokron). A Transitous alapból 0 perces minimummal és
+ * a légvonalas sétával számol: Kelenföldön vonatról M4-re 2 perc, a Kálvin téren M4-ről M3-ra
+ * 2 perc. A Google Térkép ugyanazon a vonaton 5-7 percet hagy (2026-11-21-i összevetés, 11 pont).
+ * 1,5-szeres átszállási idő + átszállásonként 2 perc: Bicske, Szentendre pontosan a Google ideje,
+ * a többi 3-5 percen belül (korábban 2-13 perccel optimistább volt).
+ */
+const TS_TRANSFER_PARAMS = { transferTimeFactor: "1.5", additionalTransferTime: "2" };
+
 /** Két pont távolsága méterben (kis távolságra elég a síkbeli közelítés). */
 function tsDistM(a, b) {
   const cosLat = Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180);
@@ -143,6 +152,7 @@ async function tsFetchPlan(from, to, params) {
     toPlace: `${to.lat},${to.lon}`,
     numItineraries: "4",
     language: "hu",
+    ...TS_TRANSFER_PARAMS,
     ...tsTimeParams(),
   });
   for (const [k, v] of Object.entries(params)) {
@@ -656,7 +666,7 @@ async function handlePlanTransitous() {
     /**
      * Az út egyik végének kerete (s). Ahol nincs saját jármű, de a MOL Bubi be van kapcsolva, ott 30 perc:
      * a Transitous alapból 15 percet enged a végre, abba a séta az állomásig + a tekerés + a séta a célig
-     * nem fér bele (pl. Keleti -> Rózsafa utca: 3 + 14 + 5 perc), így Bubis utat sosem adott.
+     * nem fér bele (pl. Keleti -> Angyalföld: 3 + 14 + 5 perc), így Bubis utat sosem adott.
      */
     const endLimit = (kind, carSec = maxCarSec) =>
       kind === "car" ? carSec + TS_PARK_WALK_SEC : kind === "bike" ? maxBikeSec : useRental ? TS_RENTAL_END_SEC : undefined;
