@@ -54,45 +54,32 @@ function isIsoArrive() {
   return document.querySelector('input[name="iso-direction"]:checked')?.value === "arrive";
 }
 
-function setIsoDirection(dir) {
-  const r = document.querySelector(`input[name="iso-direction"][value="${dir}"]`);
-  if (r) r.checked = true;
-  updateIsoLabels();
-}
-
 function updateIsoLabels() {
   const lbl = document.getElementById("origin-label");
   if (!lbl) return;
   lbl.textContent = !isIsoView() ? "Indulás" : isIsoArrive() ? "Hová érkezel" : "Honnan indulsz";
-  if (isIsoView()) {
-    const now = timeModeSelect.querySelector('option[value="now"]');
-    const at = timeModeSelect.querySelector('option[value="depart"]');
-    if (now) now.textContent = "Most";
-    if (at) at.textContent = isIsoArrive() ? "Érkezés időpontja" : "Indulás időpontja";
-  }
 }
 document.querySelectorAll('input[name="iso-direction"]').forEach((r) => {
   r.addEventListener("change", updateIsoLabels);
 });
 
 /**
- * Az időpont-választó az Elérhetőség nézetben csak két lehetőséget ad ("most" / megadott időpont);
- * az irányt a fenti kapcsoló adja. Az Útvonal nézet eredeti listáját visszaállítjuk.
+ * Időpont mindkét nézetben: "Most indulok" / "Indulás időpontja" / "Érkezés időpontja", vagy-vagy
+ * (mint a Google Térképen). Az "Utolsó járat" csak az Útvonal nézetben van: az Elérhetőségből
+ * kivesszük, visszaváltáskor visszatesszük. A választás nézetváltáskor megmarad.
  */
-let routeTimeOptionsHtml = null;
+let lastTimeOption = null;
 function applyIsoTimeOptions(iso) {
   const sel = timeModeSelect;
-  const prev = sel.value;
   if (iso) {
-    if (routeTimeOptionsHtml == null) routeTimeOptionsHtml = sel.innerHTML;
-    sel.innerHTML = '<option value="now">Most</option><option value="depart">Időpont</option>';
-    if (prev === "arrive") setIsoDirection("arrive");
-    else if (prev === "depart") setIsoDirection("depart");
-    sel.value = prev === "depart" || prev === "arrive" ? "depart" : "now";
-  } else if (routeTimeOptionsHtml != null) {
-    const wasArrive = isIsoArrive();
-    sel.innerHTML = routeTimeOptionsHtml;
-    sel.value = prev === "depart" ? (wasArrive ? "arrive" : "depart") : "now";
+    const opt = sel.querySelector('option[value="last"]');
+    if (opt) {
+      if (sel.value === "last") sel.value = "now";
+      lastTimeOption = opt;
+      opt.remove();
+    }
+  } else if (lastTimeOption && !sel.querySelector('option[value="last"]')) {
+    sel.appendChild(lastTimeOption);
   }
   sel.dispatchEvent(new Event("change"));
 }
@@ -144,29 +131,32 @@ function isoColor(i, n) {
 }
 
 /**
- * Időablak. "Most" (mindkét irányban) és "Időpont + Innen indulok": indulás t és t + 60 perc között.
- * "Időpont + Ide érkezem": érkezés t - 60 perc és t között. Az utazási idő az indulástól az érkezésig tart.
- * refs: a one-to-all kérések időpontjai, 15 percenként. "Most + Ide érkezem": a célba legkésőbb
- * most + T (+ 15, 30...) percre kell érni, így a megtalált utak most (+ 15, 30...) után indulnak.
+ * Időablak. "Most indulok" és "Indulás időpontja": indulás t és t + 60 perc között. "Érkezés
+ * időpontja": érkezés t - 60 perc és t között. Mindkét irányban (Innen indulok / Ide érkezem)
+ * ugyanígy értendő; az utazási idő az indulástól az érkezésig tart.
+ * refs: one-to-all kérések, az indulásuk (dep) 15 percenként: indulási ablakban t-től később,
+ * érkezésiben a határ előtt T perccel, onnan korábban. Innen indulok: a kérés ideje az indulás.
+ * Ide érkezem: a kérés ideje az érkezési határ (dep + T), így a megtalált utak dep után indulnak.
+ * Mindkét esetben maxTravelTime = T, tehát az érkezés legkésőbb dep + T.
  * @returns {{ kind: "depart"|"arrive", t: number, atTime: boolean, refs: object[] }}
  */
 function isoWindow(T) {
-  const arrive = isIsoArrive();
-  const atTime = timeModeSelect.value === "depart";
+  const toHere = isIsoArrive();
+  const mode = timeModeSelect.value;
+  const atTime = mode === "depart" || mode === "arrive";
   let t = Date.now();
   if (atTime) {
     const hm = /^\d{2}:\d{2}$/.test(timePick.value || "") ? timePick.value : "08:00";
     t = Date.parse(tsIso(planningDateStr(), hm));
   }
-  const kind = arrive && atTime ? "arrive" : "depart";
+  const kind = mode === "arrive" ? "arrive" : "depart";
   const iso = (ms) => new Date(ms).toISOString();
   const refs = [];
   /** 0, 15, 30, 45 perc: a 45-ös kérés a 60. percig induló utakat is megtalálja (várakozással). */
   for (let k = 0; k * ISO_STEP_MIN < ISO_WINDOW_MIN; k++) {
     const off = k * ISO_STEP_MIN * 60000;
-    if (!arrive) refs.push({ time: iso(t + off), arriveBy: "false" });
-    else if (kind === "arrive") refs.push({ time: iso(t - off), arriveBy: "true" });
-    else refs.push({ time: iso(t + T * 60000 + off), arriveBy: "true" });
+    const dep = kind === "arrive" ? t - T * 60000 - off : t + off;
+    refs.push(toHere ? { time: iso(dep + T * 60000), arriveBy: "true" } : { time: iso(dep), arriveBy: "false" });
   }
   return { kind, t, atTime, refs };
 }

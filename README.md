@@ -10,10 +10,10 @@ P+R útvonaltervező és elérhetőségi térkép Magyarországra. Autó, saját
 - Tisztán tömegközlekedés, tisztán autó / bicikli / MOL Bubi, és ezek kombinációi.
 - P+R: autóval egy állomásig, onnan tömegközlekedéssel (vagy fordítva, az érkezésnél). Több autós kerettel keres, így a "majdnem végig autó" és a "csak a sarokig autó" mellett a köztes P+R állomások is megjelennek.
 - Saját átszállási pont: megadhatod, hol teszed le az autót vagy a biciklit (pl. "Bicske vasútállomás"). A használt pontokat a böngésző megjegyzi.
-- Indulás vagy érkezés időpontjára, illetve az utolsó járatra.
+- Időpont: Most indulok, Indulás időpontja vagy Érkezés időpontja (vagy-vagy, mint a Google Térképen), illetve az utolsó járat.
 
 **Elérhetőség (izokron térkép)**
-- Egy helyből (vagy egy helyre érkezve) mi érhető el X perc utazással, színes sávokban.
+- Egy helyből (vagy egy helyre érkezve) mi érhető el X perc utazással, színes sávokban. Az időpont itt is Most indulok / Indulás / Érkezés, bármelyik iránnyal.
 - Az idő az utazás ideje: egy 60 perces indulási (vagy érkezési) ablakban a leggyorsabb út számít, így a ritkán járó, de gyors busz sem esik ki.
 - Gyalog + tömegközlekedéssel, és az út bármelyik végén autóval (P+R) vagy biciklivel. A túlsó végi jármű a térképen légvonalbeli becslés (a sebesség valódi autós időkből).
 - Kattintásra kiírja a leggyorsabb utat: mivel, honnan, meddig, aztán hogyan tovább. Egy gombbal útvonalat is tervez oda.
