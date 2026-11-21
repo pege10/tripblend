@@ -2161,6 +2161,9 @@ function renderAlternatives(candidates, selectedIdx) {
 
     // Rank labels (only for special categories, no numbering)
     let rankLabel = "";
+    /** Autós / biciklis / saját pontos változatban MOL Bubi is van (pl. vonat a Keletiig, onnan Bubi). */
+    const withBubi = c.tag !== "rentalTransit" && c.tag !== "pureRental"
+      && c.transit?.legs?.some((l) => l.mode === "RENTAL") ? " + MOL Bubi" : "";
     if (isPureCar) {
       rankLabel = `${mi("directions_car")} Tisztán autó`;
     } else if (isPureStreetBike) {
@@ -2168,19 +2171,19 @@ function renderAlternatives(candidates, selectedIdx) {
         ? `${mi("pedal_bike")} Tisztán biciklivel`
         : `${mi("pedal_bike")} Tisztán bringa (utcai, max km)`;
     } else if (c.customPoint) {
-      rankLabel = `${mi("push_pin")} Saját pont: ${c.customPoint}`;
+      rankLabel = `${mi("push_pin")} Saját pont: ${c.customPoint}${withBubi}`;
     } else if (c.tag === "mixed" && c.transit.legs.some((l) => l.mode === "CAR")) {
       /** Transitous P+R: az autóláb a lábak között; az első nem gyalogos láb dönti el az irányt. */
       const firstVeh = c.transit.legs.find((l) => l.mode !== "WALK");
       rankLabel = firstVeh?.mode === "CAR"
-        ? `${mi("directions_car")} Autó + tömegközlekedés`
-        : `${mi("departure_board")} Tömegközlekedés + autó`;
+        ? `${mi("directions_car")} Autó + tömegközlekedés${withBubi}`
+        : `${mi("departure_board")} Tömegközlekedés + autó${withBubi}`;
     } else if (c.tag === "pureRental") {
       rankLabel = `${mi("pedal_bike")} Bérbiciklivel`;
     } else if (c.tag === "rentalTransit") {
       rankLabel = `${mi("pedal_bike")} Bérbicikli + tömegközlekedés`;
     } else if (c.tag === "bikeTransit") {
-      rankLabel = `${mi("pedal_bike")} Bicikli + tömegközlekedés`;
+      rankLabel = `${mi("pedal_bike")} Bicikli + tömegközlekedés${withBubi}`;
     } else if (c.tag === "bikeModeNoBike") {
       rankLabel = `${mi("directions_walk")} Tömegközlekedés + gyalog`;
     } else if (isPureTransit) {

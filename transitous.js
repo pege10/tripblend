@@ -76,6 +76,8 @@ async function tsFetchJson(url) {
 const TS_BIKE_MPS = 4.2;
 /** Tisztán autós / biciklis / bérbiciklis út felső korlátja (s). */
 const TS_MAX_DIRECT_SEC = 4 * 3600;
+/** MOL Bubi (és séta) az út egyik végén, ahol nincs saját jármű: legfeljebb ennyi (s). */
+const TS_RENTAL_END_SEC = 1800;
 
 const TS_RAIL_MODES = [
   "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LONG_DISTANCE", "HIGHSPEED_RAIL", "NIGHT_RAIL",
@@ -420,8 +422,23 @@ async function tsViaPointCandidate(origin, dest, point, kind, position, ctx) {
 
   const directReq = (from, to, timeOpts = {}) =>
     tsFetchPlan(from, to, { transitModes: [], directModes: [vMode], maxDirectTime: TS_MAX_DIRECT_SEC, ...timeOpts });
-  const transitReq = (from, to, pre, post, timeOpts = {}) =>
-    tsFetchPlan(from, to, { transitModes: ctx.transitModes, preTransitModes: pre, postTransitModes: post, numItineraries: 5, ...timeOpts });
+  /** Tömegközlekedés a saját ponttól / pontig; a másik vég (otherSide) módja, kerete, Bubi-szűrője a ctx-ből. */
+  const transitReq = (from, to, otherSide, timeOpts = {}) => {
+    const ends = otherSide === "pre"
+      ? {
+        preTransitModes: ctx.otherEnd,
+        maxPreTransitTime: ctx.otherLimit,
+        preTransitRentalFormFactors: ctx.otherFF,
+        postTransitModes: ["WALK"],
+      }
+      : {
+        preTransitModes: ["WALK"],
+        postTransitModes: ctx.otherEnd,
+        maxPostTransitTime: ctx.otherLimit,
+        postTransitRentalFormFactors: ctx.otherFF,
+      };
+    return tsFetchPlan(from, to, { transitModes: ctx.transitModes, ...ends, numItineraries: 5, ...timeOpts });
+  };
   const firstDirect = (d) => {
     const it = d?.direct?.[0];
     if (!it) throw new Error(`nem található ${vehicleWord} út.`);
@@ -435,7 +452,7 @@ async function tsViaPointCandidate(origin, dest, point, kind, position, ctx) {
     let tr;
     if (!arrive) {
       veh = firstDirect(await directReq(origin, point));
-      const d = await transitReq(point, dest, ["WALK"], ctx.otherEnd, {
+      const d = await transitReq(point, dest, "post", {
         time: iso(Date.parse(veh.endTime) + bufferMs), arriveBy: "false",
       });
       tr = tsPickEarliestArrival(d.itineraries);
@@ -452,7 +469,7 @@ async function tsViaPointCandidate(origin, dest, point, kind, position, ctx) {
         } catch { /* marad az azonnali indulás */ }
       }
     } else {
-      const d = await transitReq(point, dest, ["WALK"], ctx.otherEnd);
+      const d = await transitReq(point, dest, "post");
       tr = tsPickLatestDeparture(d.itineraries);
       if (tr) {
         veh = firstDirect(await directReq(origin, point, {
@@ -467,7 +484,7 @@ async function tsViaPointCandidate(origin, dest, point, kind, position, ctx) {
     let veh;
     let tr;
     if (!arrive) {
-      const d = await transitReq(origin, point, ctx.otherEnd, ["WALK"]);
+      const d = await transitReq(origin, point, "pre");
       tr = tsPickEarliestArrival(d.itineraries);
       if (tr) {
         veh = firstDirect(await directReq(point, dest, {
@@ -476,7 +493,7 @@ async function tsViaPointCandidate(origin, dest, point, kind, position, ctx) {
       }
     } else {
       veh = firstDirect(await directReq(point, dest));
-      const d = await transitReq(origin, point, ctx.otherEnd, ["WALK"], {
+      const d = await transitReq(origin, point, "pre", {
         time: iso(Date.parse(veh.startTime) - bufferMs), arriveBy: "true",
       });
       tr = tsPickLatestDeparture(d.itineraries);
@@ -572,8 +589,13 @@ async function handlePlanTransitous() {
     const maxBikeSec = Math.round(((parseFloat(bikeKmSlider?.value) || 15) * 1000) / TS_BIKE_MPS);
     const endModes = (kind) =>
       kind === "car" ? ["CAR_PARKING"] : kind === "bike" ? ["BIKE"] : useRental ? ["WALK", "RENTAL"] : ["WALK"];
+    /**
+     * Az út egyik végének kerete (s). Ahol nincs saját jármű, de a MOL Bubi be van kapcsolva, ott 30 perc:
+     * a Transitous alapból 15 percet enged a végre, abba a séta az állomásig + a tekerés + a séta a célig
+     * nem fér bele (pl. Keleti -> Rózsafa utca: 3 + 14 + 5 perc), így Bubis utat sosem adott.
+     */
     const endLimit = (kind, carSec = maxCarSec) =>
-      kind === "car" ? carSec : kind === "bike" ? maxBikeSec : undefined;
+      kind === "car" ? carSec : kind === "bike" ? maxBikeSec : useRental ? TS_RENTAL_END_SEC : undefined;
     const rentalFF = useRental ? ["BICYCLE"] : undefined;
 
     const directModes = [];
@@ -636,11 +658,17 @@ async function handlePlanTransitous() {
           viaNotes.push(`A saját ${kind === "car" ? "P+R" : "átszállási"} pont nem található (${e.message}).`);
         }
         if (!point) continue;
-        const otherEnd = endModes(pos === "first" ? leg.last : leg.first);
+        const otherKind = pos === "first" ? leg.last : leg.first;
+        const ctx = {
+          transitModes,
+          otherEnd: endModes(otherKind),
+          otherLimit: endLimit(otherKind),
+          otherFF: otherKind === "none" ? rentalFF : undefined,
+        };
         viaJobs.push({
           kind,
           point,
-          result: tsViaPointCandidate(origin, dest, point, kind, pos, { transitModes, otherEnd })
+          result: tsViaPointCandidate(origin, dest, point, kind, pos, ctx)
             .then((c) => ({ c }), (err) => ({ err })),
         });
       }
@@ -697,14 +725,23 @@ async function handlePlanTransitous() {
      */
     const vehicleSec = (c) =>
       c.tag === "mixed" ? totalCarMotorSec(c) : c.tag === "bikeTransit" ? totalBikeTimeSec(c) : totalRentalSec(c);
+    /**
+     * Csoportok: járműtípus, és külön az, amelyikben MOL Bubi is van (pl. autó Székesfehérvárig, IC a
+     * Keletiig, onnan Bubi). Ez ugyanannyi autózással jár, mint a metrós párja, ezért egy csoportban
+     * közeli másolatnak számítana és kimaradna. A Bubis csoportból legfeljebb 2 kerül ki.
+     */
+    const groupOf = (c) =>
+      c.tag + (c.tag !== "rentalTransit" && c.transit.legs.some((l) => l.mode === "RENTAL") ? "+bubi" : "");
+    const groups = ["mixed", "bikeTransit", "rentalTransit", "mixed+bubi", "bikeTransit+bubi"];
     const vehicleShown = [];
-    for (const tag of ["mixed", "bikeTransit", "rentalTransit"]) {
+    for (const group of groups) {
       let bestVehicleSec = Infinity;
       let n = 0;
-      for (const c of vehicle.filter((x) => x.tag === tag)) {
+      const maxN = group.endsWith("+bubi") ? 2 : 4;
+      for (const c of vehicle.filter((x) => groupOf(x) === group)) {
         const vs = vehicleSec(c);
         /** Legalább 5 perccel (és 15%-kal) kevesebb járműidő kell, különben csak egy közeli másolat. */
-        if (vs <= Math.min(bestVehicleSec - 300, bestVehicleSec * 0.85) && n < 4) {
+        if (vs <= Math.min(bestVehicleSec - 300, bestVehicleSec * 0.85) && n < maxN) {
           c.showAlways = true;
           vehicleShown.push(c);
           bestVehicleSec = vs;
